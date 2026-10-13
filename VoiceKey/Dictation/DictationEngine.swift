@@ -332,8 +332,7 @@ final class DictationEngine: ObservableObject {
                 }
                 return
             }
-            let outcome = result
-            self.partialRaw = Self.joinTranscripts([self.partialRaw, outcome.text])
+            self.partialRaw = Self.joinTranscripts([self.partialRaw, result.text])
             self.liveText = self.partialRaw
             KeyboardChannel.publishPartial(self.partialRaw)
         }
