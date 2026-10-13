@@ -43,10 +43,11 @@ final class AudioRecorder {
             throw RecorderError.formatUnavailable
         }
         let session = AVAudioSession.sharedInstance()
-        // 与已验证实现一致：mode 用 .default（.measurement 会改输入处理链，且与画中画待命更易冲突），
-        // 蓝牙走 iOS 17 起的 .allowBluetoothHFP。
+        // 与已验证实现一致：mode 用 .default（.measurement 会改输入处理链，且与画中画待命更易冲突）。
+        // 蓝牙选项用 .allowBluetooth：新版 SDK 里它的替代名是 .allowBluetoothHFP，
+        // 但那个符号在 Xcode 16 的 iOS 18 SDK 里不存在，为保证任意 Xcode 都能编过，这里用旧名。
         try session.setCategory(.playAndRecord, mode: .default,
-                                options: [.defaultToSpeaker, .allowBluetoothHFP, .mixWithOthers])
+                                options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
         try session.setActive(true)
 
         let input = engine.inputNode
