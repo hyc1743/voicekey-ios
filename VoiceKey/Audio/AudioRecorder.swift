@@ -84,7 +84,7 @@ final class AudioRecorder {
         let samples = pcm
         pcm.removeAll(keepingCapacity: false)
         lock.unlock()
-        guard samples.count > Self.targetSampleRate / 2 else { return nil }   // < 0.5 s 视为误触
+        guard samples.count > Int(Self.targetSampleRate / 2) else { return nil }   // < 0.5 s 视为误触
         return Self.wav(fromPCM16: samples)
     }
 

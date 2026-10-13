@@ -2,7 +2,7 @@ import Foundation
 
 struct ServiceError: LocalizedError {
     let message: String
-    var detail: String?
+    var detail: String? = nil
 
     var errorDescription: String? {
         if let detail, !detail.isEmpty { return "\(message)：\(detail)" }
