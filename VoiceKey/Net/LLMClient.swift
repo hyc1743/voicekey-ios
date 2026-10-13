@@ -1,7 +1,7 @@
 import Foundation
 
 /// 文本整理。默认适配 DeepSeek（OpenAI 兼容 /chat/completions），支持流式返回。
-struct LLMClient {
+final class LLMClient {
     var session: URLSession = .shared
     private(set) var exchange: String = ""
 

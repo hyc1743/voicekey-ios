@@ -27,7 +27,7 @@ struct ServiceError: LocalizedError {
 ///
 /// 刻意*不*发的东西：这些模型上没有依据的热词字段（`parameters.vocabulary`）、
 /// 额外的 `input_text` 上下文消息。术语改由整理模型的提示词承担。
-struct ASRClient {
+final class ASRClient {
     var session: URLSession = .shared
     /// 实例级：并发分段时不会互相覆盖（原来是 static，存在竞态）。
     private(set) var exchange: String = ""
