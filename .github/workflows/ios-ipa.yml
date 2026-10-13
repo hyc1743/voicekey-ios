@@ -31,9 +31,16 @@ jobs:
         run: |
           set -euo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          echo "== app target =="
+          echo "== app target (含 ObjC 桥接头) =="
           xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0 -swift-version 5 \
+            -import-objc-header VoiceKey/VoiceKey-Bridging-Header.h \
+            -I . \
             $(find Shared VoiceKey -name '*.swift' | sort)
+          echo "== ObjC 语法 =="
+          for file in $(find VoiceKey -name '*.m' | sort); do
+            xcrun clang -fsyntax-only -fobjc-arc -x objective-c -isysroot "$SDK" \
+              -target arm64-apple-ios17.0 -I VoiceKey "$file"
+          done
           echo "== keyboard target =="
           xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0 -swift-version 5 \
             -application-extension \
