@@ -153,6 +153,38 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 ---
 
+## 五之一、保活链路（模仿 Typeless）
+
+目标是"用户离开 App 后，键盘点麦克风仍能直接开口，不用切回来"。链路如下，每步都有对应的失败兜底：
+
+```
+① 主 App 前台时用户开启「画中画待命」
+      └ PiPVisibilityAdapter 绑定 AVKit 平台适配器（失败 → 自动换普通视频，不隐藏）
+      └ 启动 96×54 的循环视频（隐藏模式用近黑素材）→ 得到系统画中画会话
+② 待命期间**不 deactivate 音频会话**  ← 录音结束也不拆，否则系统会回收画中画
+③ 键盘点麦克风：Darwin ping-pong 确认主 App 活着 → emit 命令（有活跃 PiP 时进程不会被挂起）
+④ 录音：会话切 .playAndRecord(.default, mixWithOthers) → 画中画视频被停住但不结束
+⑤ 录完：**不 deactivate** → resumeIdlePlayback() 切回 .playback + player.play() → 保活继续
+⑥ 任何一步失败都会如实上报（诊断页 / 键盘状态药丸），不会静默变成"假待命"
+```
+
+隐藏浮窗的原理（与 Typeless 2.7.0 取证一致）：对 `AVPictureInPicturePlatformAdapter` 做**作用域限定**的私有方法替换——
+`pictureInPictureProxyContentType:` 返回 6、`_proxyControlsStyle` 返回 5、并挂钩两个刷新入口
+（`_updateProxyPlaybackState` 与 `_updatePlaybackStateContentTypeIfNeeded`）在系统重算内容类型时再次应答，
+同时**只观察** `_setStashedOrUnderLock:reason:`（保留系统收起行为，不做小动作）。
+所有替换都做签名校验、只动本类实现、可完整回滚；设置里可单独关掉「隐藏画中画浮窗」，关掉后完全不碰私有方法。
+
+**真机验证方法**（这也是我无法替你完成的部分）：
+1. App 里选「画中画待命（实验）」，确认出现一个小的画中画窗口（或在系统画中画里看到）；
+2. 按 Home 切到微信/备忘录，**等 1–2 分钟**（不要立刻操作）；
+3. 切到 VoiceKey 键盘点麦克风：
+   - 期望：键盘直接变红录音，没有跳到 App；
+   - 若提示「未在后台」→ 说明待命已被系统回收，请把诊断页的待命状态发我；
+4. 说完停止，确认文字自动插入，且键盘状态回到「待命、已插入」。
+
+> 未验证/不确定：不同 iOS 版本对 PiP 后台存活时长、以及类别切换时是否保留 PiP 的策略不同；
+> 目前只能保证"按已验证实现的字段与调用顺序一致"，实际存活时长必须真机测。
+
 ## 五之二、键盘样式
 
 沿用 **Voxt-ios 语音面板**的视觉语言，但不做双拼/拼音输入，也不引入 Rime（本键盘只负责说话与插入）：

@@ -30,9 +30,14 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
     private var possibleObservation: NSKeyValueObservation?
     private var stopRequested = false
     private var startRequested = false
+    private var hiddenInstalled = false
+    private var normalRetryUsed = false
 
     var isActive: Bool {
-        controller?.isPictureInPictureActive == true && player?.error == nil && status.active
+        controller?.isPictureInPictureActive == true
+            && player?.error == nil
+            && player?.currentItem?.status != .failed
+            && status.active
     }
 
     // MARK: - 启动 / 停止
@@ -63,11 +68,11 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
         let item = AVPlayerItem(url: url)
         let looper = AVPlayerLooper(player: player, templateItem: item)
 
-        // 画中画要求图层在视图树里；这里放一个 2×2 的不可见锚点，尽量避免干扰界面。
-        let anchor = UIView(frame: CGRect(x: 1, y: 1, width: 2, height: 2))
-        anchor.alpha = 0.02
+        // 画中画要求图层在视图树里且尺寸正常（退化尺寸会导致 isPictureInPicturePossible 不成立）。
+        // 隐藏靠视频内容 + 适配器完成，桌面内这一小块只在 App 前台短暂可见。
+        let anchor = UIView(frame: CGRect(x: 12, y: window.safeAreaInsets.top + 8, width: 96, height: 54))
         anchor.isUserInteractionEnabled = false
-        anchor.accessibilityElementsHidden = true
+        anchor.accessibilityLabel = "VoiceKey 画中画待命"
         let layer = AVPlayerLayer(player: player)
         layer.frame = anchor.bounds
         layer.videoGravity = .resizeAspect
@@ -96,10 +101,12 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
         startRequested = true
 
         var hidden = false
-        if hideWindow {
+        if hideWindow, !normalRetryUsed {
             hidden = adapter.bind(to: controller)
+            hiddenInstalled = hidden
             if !hidden {
-                // 隐藏失败不影响画中画本身，退回可见模式并如实上报。
+                // 绑定失败不影响画中画本身：换成普通视频、如实上报。
+                useNormalVideo()
                 update(active: status.active, message: adapter.diagnostic, hidden: false)
             }
         }
@@ -112,7 +119,12 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
     func resumeIdlePlayback() {
         dispatchPrecondition(condition: .onQueue(.main))
         guard controller != nil, let player else { return }
-        if player.rate == 0 { player.play() }
+        // 录音会把类别切成 playAndRecord，这里必须切回 playback 再播，否则画中画视频不动，
+        // 系统可能因此判定会话结束并回收待命。
+        let audio = AVAudioSession.sharedInstance()
+        try? audio.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        try? audio.setActive(true)
+        player.play()
         adapter.refresh()
     }
 
@@ -132,6 +144,8 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
         player = nil
         sourceView?.removeFromSuperview()
         sourceView = nil
+        hiddenInstalled = false
+        normalRetryUsed = false
         update(active: false, message: "已停止", hidden: false)
     }
 
@@ -155,7 +169,27 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
     func pictureInPictureController(_ controller: AVPictureInPictureController,
                                     failedToStartPictureInPictureWithError error: Error) {
         guard controller === self.controller else { return }
+        // 隐藏模式下启动失败，先降级普通视频重试一次，再谈失败。
+        if hiddenInstalled, !normalRetryUsed {
+            normalRetryUsed = true
+            hiddenInstalled = false
+            adapter.invalidate()
+            useNormalVideo()
+            startRequested = false
+            update(active: false, message: "隐藏模式启动失败，已降级为普通画中画重试", hidden: false)
+            DispatchQueue.main.async { [weak self] in self?.startWhenPossible() }
+            return
+        }
         update(active: false, message: "画中画启动失败：\(error.localizedDescription)", hidden: false)
+    }
+
+    /// 换成普通（非隐藏）素材，用于降级重试。
+    private func useNormalVideo() {
+        guard let url = Bundle.main.url(forResource: "Standby", withExtension: "mp4"), let player else { return }
+        looper?.disableLooping()
+        player.removeAllItems()
+        looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        player.play()
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ controller: AVPictureInPictureController) {
