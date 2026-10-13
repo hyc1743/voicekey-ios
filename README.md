@@ -168,6 +168,18 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 ⑥ 任何一步失败都会如实上报（诊断页 / 键盘状态药丸），不会静默变成"假待命"
 ```
 
+**关于"用户应该感知不到"**（这是关键体验指标）：
+
+| | 原版 Typeless | 本项目（0.1.6 起） |
+|---|---|---|
+| PiP 内容源 | `AVPictureInPictureControllerContentSource` + `AVSampleBufferDisplayLayer`（`initWithContentSource:` / `initWithSampleBufferDisplayLayer:playbackDelegate:` 均在其二进制符号表中） | `AVPlayerLayer` + 循环视频 |
+| 隐藏手段 | 由代理内容类型 / 控件样式 override 决定"窗口里画什么"，理论上可以什么都不画 | 视频素材退化成**极扁条带**：隐藏模式素材 2432×2（同已验证实现），窗口因此收缩成一条细线；App 内锚点 96×54 叠加 `resizeAspect` 后同样只剩发丝宽 |
+| 用户观感 | 无可见窗口 | **预期是一条几乎不可见的细线**（待真机确认） |
+
+> 两条路线的目标相同：让系统保留 PiP 会话（= 后台运行许可），但屏幕上不出现有存在感的窗口。
+> 本项目走的是已验证实现在用的"极扁素材"路线；Typeless 走的是 sample-buffer 内容源路线。
+> 若真机上细线仍可感知，可再切到 sample-buffer 路线（需要实现 `AVPictureInPictureSampleBufferPlaybackDelegate`）。
+
 隐藏浮窗的原理（与 Typeless 2.7.0 取证一致）：对 `AVPictureInPicturePlatformAdapter` 做**作用域限定**的私有方法替换——
 `pictureInPictureProxyContentType:` 返回 6、`_proxyControlsStyle` 返回 5、并挂钩两个刷新入口
 （`_updateProxyPlaybackState` 与 `_updatePlaybackStateContentTypeIfNeeded`）在系统重算内容类型时再次应答，
