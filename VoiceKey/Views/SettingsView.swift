@@ -11,8 +11,14 @@ struct SettingsView: View {
                         ForEach(ASRKind.allCases) { kind in Text(kind.title).tag(kind) }
                     }
                     Text(engine.asr.kind.hint).font(.caption).foregroundStyle(.secondary)
-                    LabeledContent("实际协议族", value: engine.asr.resolvedKind == .dashscopeInputAudio ? "input_audio"
-                                   : (engine.asr.resolvedKind == .dashscopeQwen3 ? "qwen3" : "openai-multipart"))
+                    LabeledContent("实际路由", value: {
+                        switch engine.asr.resolvedKind {
+                        case .dashscopeNative: return "百炼原生短音频"
+                        case .dashscopeCompatibleChat: return "百炼兼容模式 chat"
+                        case .openAITranscriptions: return "OpenAI 兼容 multipart"
+                        case .auto: return "自动"
+                        }
+                    }())
                     TextField("接口地址", text: $engine.asr.endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     SecureField("API Key（存 Keychain）", text: $engine.asr.apiKey)
@@ -22,7 +28,7 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("识别提示词（可选）", text: $engine.asr.customPrompt, axis: .vertical).lineLimit(2...4)
 
-                    Toggle("把个人术语作为热词提交", isOn: $engine.asr.useVocabulary)
+                    Toggle("附加官方 CLI 增强参数（未验证）", isOn: $engine.asr.useCLIExtras)
                     TextField("format 覆盖（留空自动）", text: $engine.asr.formatHintOverride)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
 
@@ -40,7 +46,7 @@ struct SettingsView: View {
                 } header: {
                     Text("语音识别 ASR")
                 } footer: {
-                    Text("默认：阿里云百炼 qwen-audio-3.1-asr-flash，走官方 input_audio 协议（content={type:input_audio}，参数 format/sample_rate/language_hints/vocabulary），依据百炼官方 CLI 的 asr-routes.ts。\n长录音按分段提交；开启「边录边识别」后边说边出字（会增加请求次数）。\nAAC/m4a 体积约为 WAV 的 1/20；若接口报格式错误，把上面的 format 覆盖改成 m4a 或切回 WAV。")
+                    Text("默认：qwen-audio-3.1-asr-flash，走百炼原生短音频接口：content={type:input_audio,input_audio:{data}} + parameters={format,sample_rate:16000}，并带 X-DashScope-SSE: disable。这套字段与真机验证过的实现逐字段一致。\n该模型不支持热词参数，个人术语会作为提示词交给整理模型。\n单段 base64 上限 10 MB；长录音自动分段。AAC/m4a 体积约 1/20，若接口报格式错，把 format 覆盖改成 m4a 或切回 WAV。")
                 }
 
                 Section {

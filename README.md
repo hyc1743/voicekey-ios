@@ -88,24 +88,31 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 ---
 
-## 四之二、ASR 协议依据（为什么这样发请求）
+## 四之二、ASR 协议依据（逐字段对齐已真机验证的实现）
 
-代码里的协议族判定与请求体照抄**百炼官方 CLI** `modelstudioai/cli`
-（公开仓库）的 `packages/core/src/client/asr-routes.ts`：
+百炼部分不是"照文档猜的"，而是**逐字段对齐 `Voxt-ios` 里已被真机验证、并被单测锁定的实现**
+（`RemoteClients.aliyunASRPayload` + `VoxtIOSTests.testQwenAudio31UsesNativeDashScopeSchema`
++ `PersonalizationTests.testProviderCapabilitiesNeverInventUnknownHotwordParameters`），
+路由规则同时与百炼官方 CLI `modelstudioai/cli` 的 `asr-routes.ts` 一致。
 
-| 官方逻辑 | 本项目对应 |
-|---|---|
-| `INPUT_AUDIO_FLASH_PREFIXES = ["fun-asr-flash", "qwen-audio"]`；`qwen-audio*` 且含 `asr-flash` → input_audio 族 | `ASRKind.resolve(model:)`，默认 `kind = .auto` |
-| input_audio 族：`content:[{type:"input_audio",input_audio:{data}}]`，`parameters:{format,sample_rate:"16000",language_hints,vocabulary_id,vocabulary}`，上下文用**独立的 `input_text` 消息且排在音频之前** | `transcribeInputAudioFamily(...)` |
-| `qwen3-asr-flash` → `content:[{audio}]` + `parameters.asr_options.language` | `transcribeQwen3Family(...)` |
-| 取文顺序：input_audio 族 `output.text` → `output.sentence.text` → `output.output.sentence.text`；qwen3 族 `output.choices[].message.content` | `extractInputAudioText` / `extractQwen3Text` |
-| `inferAudioFormatHint`：`audio/mpeg→mp3`、`audio/x-wav|wave→wav`、否则取子类型 | `ASRClient.inferFormatHint(mimeType:)`，可用设置里的「format 覆盖」手动改 |
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 路由 | `qwen-audio-*` / `fun-asr-flash*` → 原生短音频；`qwen3-asr-flash*` → 兼容模式 chat | 官方 CLI `resolveAsrApi` + 已验证实现 |
+| 原生端点 | `POST /api/v1/services/aigc/multimodal-generation/generation` | 单测断言 `request.url?.path` |
+| 原生 body | `{model, input:{messages:[{role:"user",content:[{type:"input_audio",input_audio:{data:"data:audio/wav;base64,…"}}]}]}, parameters:{format:"wav", sample_rate:16000}}` | 单测逐字段断言（**`sample_rate` 是整数**，`format` 是字符串） |
+| 原生消息条数 | **恒为 1**，不发 `input_text` 上下文消息 | `PersonalizationTests` 断言 `messages.count == 1` |
+| 热词 | 该模型**不发**热词字段；术语改由整理模型提示词承担 | 单测 `neverInventUnknownHotwordParameters` |
+| 请求头 | `Authorization: Bearer …` + `X-DashScope-SSE: disable` | 单测断言 |
+| 兼容模式 | `POST /compatible-mode/v1/chat/completions`，`{model, stream:false, messages:[…input_audio…]}`，可用 system 消息带术语 | 已验证实现 + 其单测 |
+| 取文 | 原生：`output.text` → `output.sentence(.text)` → `output.choices`；兼容：`choices[].message.content` | 已验证实现 |
+| 端点归一化 | 用户误填兼容模式地址或只填到 `/api/v1` 时自动改写 | 已验证实现的 `aliyunASRURL` |
+| 大小上限 | base64 < 10 MB | 已验证实现的硬检查（也是本项目长录音分段的依据） |
 
-同步调用会带 `X-DashScope-SSE: disable`，直接拿一次性 JSON。**术语**在 input_audio 族里作为
-`parameters.vocabulary`（词→权重 4）提交，这是官方支持的热词通道，比塞进提示词更有效。
+设置页里的「附加官方 CLI 增强参数」是**默认关闭**的实验项：官方 CLI 会发 `language_hints`/`vocabulary`，
+但已验证实现从不发送这些字段，所以默认不跟着发，报错时保持关闭即可。
 
-> 早期版本我曾按 `qwen3` 族的写法（`content:[{audio}]`）去调 `qwen-audio-3.1-asr-flash`，属于**协议族用错**，
-> 已按官方实现纠正；设置页会显示"实际协议族"以便核对。
+> 教训：早期版本我用 `qwen3` 族的 body（`content:[{audio}]`）+ 字符串 `sample_rate` + 自创的
+> `parameters.vocabulary` 去调 `qwen-audio-3.1-asr-flash`，三处都不对——现已按上述依据纠正。
 
 ## 五、配置云端服务
 
