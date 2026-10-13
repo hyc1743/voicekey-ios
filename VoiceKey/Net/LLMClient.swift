@@ -3,7 +3,7 @@ import Foundation
 /// 文本整理。默认适配 DeepSeek（OpenAI 兼容 /chat/completions），支持流式返回。
 struct LLMClient {
     var session: URLSession = .shared
-    static var lastExchange: String = ""
+    private(set) var exchange: String = ""
 
     /// - Parameter onDelta: 流式回调，参数是"到目前为止"的完整文本（不是增量），便于直接上屏。
     func cleanup(raw: String,
@@ -50,7 +50,7 @@ struct LLMClient {
         if wantsStream { request.setValue("text/event-stream", forHTTPHeaderField: "Accept") }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n流式=\(wantsStream)\n原文 \(raw.count) 字"
+        exchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n流式=\(wantsStream)\n原文 \(raw.count) 字"
 
         let produced: String
         if wantsStream, let onDelta {
@@ -60,7 +60,7 @@ struct LLMClient {
             guard let http = response as? HTTPURLResponse else {
                 throw ServiceError(message: "整理服务返回了非 HTTP 响应")
             }
-            Self.lastExchange += "\nHTTP \(http.statusCode)\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
+            exchange += "\nHTTP \(http.statusCode)\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
             guard (200..<300).contains(http.statusCode) else {
                 throw ServiceError(message: "整理请求失败（HTTP \(http.statusCode)）", detail: Self.errorMessage(data))
             }
@@ -86,7 +86,7 @@ struct LLMClient {
                 guard data.count < 8192 else { break }
                 data.append(byte)
             }
-            Self.lastExchange += "\nHTTP \(http.statusCode)\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
+            exchange += "\nHTTP \(http.statusCode)\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
             throw ServiceError(message: "整理请求失败（HTTP \(http.statusCode)）", detail: Self.errorMessage(data))
         }
 
@@ -104,7 +104,7 @@ struct LLMClient {
             }
             firstChunk = try Self.parseChat(data)
             onDelta(firstChunk)
-            Self.lastExchange += "\nHTTP \(http.statusCode)（非 SSE）\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
+            exchange += "\nHTTP \(http.statusCode)（非 SSE）\n\(String(data: data.prefix(600), encoding: .utf8) ?? "")"
             return firstChunk
         }
 
@@ -145,7 +145,7 @@ struct LLMClient {
                 line.append(byte)
             }
         }
-        Self.lastExchange += "\nHTTP \(http.statusCode)（SSE）\n收到 \(accumulated.count) 字"
+        exchange += "\nHTTP \(http.statusCode)（SSE）\n收到 \(accumulated.count) 字"
             + (sawReasoning ? "（期间有思维链输出）" : "")
         if accumulated.isEmpty, sawReasoning {
             throw ServiceError(message: "模型只返回了思考过程", detail: "请在设置里关闭「深度思考模式」后重试")

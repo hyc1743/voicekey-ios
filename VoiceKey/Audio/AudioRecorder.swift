@@ -80,12 +80,16 @@ final class AudioRecorder {
     }
 
     /// 停止并返回原始 PCM16（16 kHz 单声道）；无有效音频时返回 nil。
-    func stop() -> Data? {
+    /// - Parameter deactivateSession: 画中画/静音待命期间必须传 false，
+    ///   否则 `setActive(false)` 会连待命音频一起拆掉（Voxt-ios 的 finishCapture 同理）。
+    func stop(deactivateSession: Bool = true) -> Data? {
         guard isRunning else { return nil }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
-        _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if deactivateSession {
+            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         converter = nil
 
         lock.lock()
@@ -96,12 +100,14 @@ final class AudioRecorder {
         return samples
     }
 
-    func cancel() {
+    func cancel(deactivateSession: Bool = true) {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
-        _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if deactivateSession {
+            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         converter = nil
         lock.lock(); pcm.removeAll(); lock.unlock()
     }
@@ -130,8 +136,8 @@ final class AudioRecorder {
         let count = Int(output.frameLength)
         let bytes = Data(bytes: channel[0], count: count * MemoryLayout<Int16>.size)
         lock.lock()
-        // 上限 3 分钟，防止异常情况下无限增长
-        if pcm.count < Int(Self.targetSampleRate) * 2 * 180 { pcm.append(bytes) }
+        // 与引擎的 300 秒硬上限保持一致，避免"UI 说 5 分钟、实际 3 分钟后就丢音频"。
+        if pcm.count < Int(Self.targetSampleRate) * 2 * 300 { pcm.append(bytes) }
         lock.unlock()
 
         var sum: Double = 0

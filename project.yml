@@ -31,6 +31,7 @@ targets:
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "VoiceKey 需要使用麦克风把你说的话变成文字。"
+        NSLocalNetworkUsageDescription: "VoiceKey 可连接你在局域网里自建的模型服务（如 Ollama、LM Studio）。"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:

@@ -29,7 +29,8 @@ struct ServiceError: LocalizedError {
 /// 额外的 `input_text` 上下文消息。术语改由整理模型的提示词承担。
 struct ASRClient {
     var session: URLSession = .shared
-    static var lastExchange: String = ""
+    /// 实例级：并发分段时不会互相覆盖（原来是 static，存在竞态）。
+    private(set) var exchange: String = ""
 
     /// 已验证实现的硬限制：base64 后不超过 10 MB。
     private static let maxBase64Bytes = 10 * 1024 * 1024
@@ -77,7 +78,7 @@ struct ASRClient {
             ]]],
             "parameters": parameters
         ]
-        Self.lastExchange = "POST \(url.absoluteString)\n路由=原生短音频 model=\(settings.model)\nformat=\(parameters["format"] ?? "")"
+        exchange = "POST \(url.absoluteString)\n路由=原生短音频 model=\(settings.model)\nformat=\(parameters["format"] ?? "")"
             + "\n音频 base64 \(dataURI.utf8.count / 1024) KB"
         let data = try await post(body, to: url, key: settings.apiKey, provider: "百炼 ASR", disableSSE: true)
         return try Self.extractNativeText(data)
@@ -107,7 +108,7 @@ struct ASRClient {
             "stream": false,
             "messages": messages
         ]
-        Self.lastExchange = "POST \(url.absoluteString)\n路由=兼容模式 chat model=\(settings.model)\n音频 base64 \(dataURI.utf8.count / 1024) KB"
+        exchange = "POST \(url.absoluteString)\n路由=兼容模式 chat model=\(settings.model)\n音频 base64 \(dataURI.utf8.count / 1024) KB"
         let data = try await post(body, to: url, key: settings.apiKey, provider: "百炼 ASR", disableSSE: false)
         return try Self.extractCompatibleText(data)
     }
@@ -136,7 +137,7 @@ struct ASRClient {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
-        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n格式=\(format.rawValue) 大小=\(audio.count) bytes"
+        exchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n格式=\(format.rawValue) 大小=\(audio.count) bytes"
         let data = try await send(request, provider: "语音识别")
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = object["text"] as? String {
@@ -165,7 +166,7 @@ struct ASRClient {
             throw ServiceError(message: "\(provider)返回了非 HTTP 响应")
         }
         let preview = String(data: data.prefix(600), encoding: .utf8) ?? "<\(data.count) 字节>"
-        Self.lastExchange += "\nHTTP \(http.statusCode)\n\(preview)"
+        exchange += "\nHTTP \(http.statusCode)\n\(preview)"
         guard (200..<300).contains(http.statusCode) else {
             throw ServiceError(message: "\(provider)请求失败（HTTP \(http.statusCode)）", detail: Self.errorMessage(data))
         }

@@ -107,6 +107,15 @@ final class StandbyVideoPiP: NSObject, AVPictureInPictureControllerDelegate {
         update(active: true, message: hidden ? "画中画待命（已隐藏浮窗）" : "画中画待命（浮窗可见）", hidden: hidden)
     }
 
+    /// 录音会把音频会话切成 playAndRecord，画中画里的视频会因此停住；
+    /// 录完不动它，画中画窗口可能被系统判定为"已结束"而回收待命。
+    func resumeIdlePlayback() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard controller != nil, let player else { return }
+        if player.rate == 0 { player.play() }
+        adapter.refresh()
+    }
+
     func stop() {
         dispatchPrecondition(condition: .onQueue(.main))
         stopRequested = true
