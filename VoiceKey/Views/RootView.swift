@@ -44,7 +44,7 @@ struct DictationView: View {
         switch engine.stage {
         case .idle: "点一下开始说话"
         case .recording: String(format: "录音中 %.1f 秒", engine.seconds)
-        case .transcribing: "正在识别…"
+        case .transcribing: engine.progress.isEmpty ? "正在识别…" : engine.progress
         case .cleaning: "正在整理…"
         case .done: "完成，已复制到剪贴板"
         case .failed: "失败"
@@ -101,6 +101,19 @@ struct DictationView: View {
                         .padding(.horizontal)
                 }
 
+                if !engine.liveText.isEmpty, engine.stage == .recording || engine.stage == .cleaning {
+                    ScrollView {
+                        Text(engine.liveText)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(10)
+                    }
+                    .frame(maxHeight: 140)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .padding(.horizontal)
+                }
+
                 if case let .done(text) = engine.stage {
                     ScrollView {
                         Text(text)
@@ -120,12 +133,20 @@ struct DictationView: View {
                     .buttonStyle(.bordered)
                 }
 
-                Toggle("静音 2 秒自动结束", isOn: $engine.autoStopOnSilence)
-                    .padding(.horizontal)
+                VStack(spacing: 6) {
+                    Toggle("静音 2 秒自动结束", isOn: $engine.autoStopOnSilence)
+                    HStack {
+                        Text("待命").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(engine.standbyStatus).foregroundStyle(.secondary)
+                    }
+                    .font(.footnote)
+                }
+                .padding(.horizontal)
 
                 Spacer()
             }
-            .navigationTitle("VOXT")
+            .navigationTitle("VoiceKey")
             .padding(.bottom, 8)
         }
     }

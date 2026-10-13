@@ -1,4 +1,4 @@
-# VOXT（VoiceKey）
+# VoiceKey（VoiceKey）
 
 一个可自定义云端 ASR / LLM 的 iOS 语音输入 App：**主 App 录音 + 键盘扩展上屏**。
 默认适配 **阿里云百炼 `qwen-audio-3.1-asr-flash`**（识别）与 **DeepSeek**（整理），两者都可换成任意兼容服务。
@@ -84,7 +84,7 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 - 免费 Apple ID：**拿不到 App Group**，键盘通道自动降级为 Darwin + 剪贴板（功能可用，状态显示更少）。
 - 付费开发者账号：在 `VoiceKey/VoiceKey.entitlements` 与 `VoiceKeyKeyboard/VoiceKeyKeyboard.entitlements` 里把 `group.dev.hyc.voicekey` 换成你自己 Team 下的 App Group ID（两处必须一致），重签时带上该 entitlement。
 
-安装后启用键盘：**设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → VOXT**，并在键盘详情里打开「允许完全访问」（不打开无法与主 App 通信）。
+安装后启用键盘：**设置 → 通用 → 键盘 → 键盘 → 添加新键盘 → VoiceKey**，并在键盘详情里打开「允许完全访问」（不打开无法与主 App 通信）。
 
 ---
 
@@ -110,7 +110,7 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 ## 六、已知限制（如实说明）
 
-1. **后台待命不保证**：开启后 App 退到后台会播放静音（`.playback` + `mixWithOthers`）以尽量存活，但 iOS 仍可能随时挂起。挂起时键盘会提示「VOXT 未在后台运行」并退回「打开 VOXT」路径。没有使用画中画等私有 API 手段。
+1. **后台待命不保证**：开启后 App 退到后台会播放静音（`.playback` + `mixWithOthers`）以尽量存活，但 iOS 仍可能随时挂起。挂起时键盘会提示「VoiceKey 未在后台运行」并退回「打开 VoiceKey」路径。没有使用画中画等私有 API 手段。
 2. **键盘兜底打开主 App 用了私有 selector**：先调用官方的 `extensionContext.open(_:)`，失败才尝试响应链上的 `openURL:options:completionHandler:`。上架审核前请移除这段。
 3. **API Key 存在 App Group UserDefaults**：同一 App Group 内的键盘扩展理论上可读；当前键盘代码不读密钥。要更严谨可迁移到 Keychain。
 4. **未做流式识别**：一次请求上传整段 WAV（≤3 分钟）。长录音会明显变慢，后续可改为分片上传 / SSE。

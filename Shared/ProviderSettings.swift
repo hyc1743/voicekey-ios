@@ -13,8 +13,8 @@ enum ASRKind: String, Codable, CaseIterable, Identifiable {
     }
     var hint: String {
         switch self {
-        case .dashscopeQwen: "DashScope 原生多模态接口，音频以 Base64 WAV 直传，默认模型 qwen-audio-3.1-asr-flash。"
-        case .openAITranscriptions: "multipart 上传 WAV，适用于 Whisper、GLM、SenseVoice 等兼容服务。"
+        case .dashscopeQwen: "DashScope 原生多模态接口，音频以 Base64 直传，默认模型 qwen-audio-3.1-asr-flash。"
+        case .openAITranscriptions: "multipart 上传音频，适用于 Whisper、GLM、SenseVoice 等兼容服务。"
         }
     }
 }
@@ -35,13 +35,53 @@ enum LLMKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// 上传音频格式。WAV 兼容性最好，m4a 体积约为 1/20（长录音推荐）。
+enum UploadFormat: String, Codable, CaseIterable, Identifiable {
+    case wav
+    case m4a
+
+    var id: String { rawValue }
+    var title: String { self == .wav ? "WAV（兼容性最好）" : "AAC/m4a（体积约 1/20）" }
+    var fileExtension: String { self == .wav ? "wav" : "m4a" }
+    var mimeType: String { self == .wav ? "audio/wav" : "audio/mp4" }
+}
+
+/// 后台待命方式。
+enum StandbyMode: String, Codable, CaseIterable, Identifiable {
+    case off
+    case silentAudio
+    case pictureInPicture
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: "关闭"
+        case .silentAudio: "静音输出（无私有 API）"
+        case .pictureInPicture: "画中画（实验，含私有 API）"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .off: "主 App 进入后台后可能被系统挂起，此时键盘会提示打开 App。"
+        case .silentAudio: "播放静音尽量保持存活；iOS 仍可能挂起，但不触碰任何私有接口。"
+        case .pictureInPicture: "用循环视频占用系统画中画会话换取后台运行时间（Typeless 同款思路）；依赖 AVKit 私有方法，系统升级可能失效，上架审核前请改用其它方式。"
+        }
+    }
+}
+
 struct ASRSettings: Codable, Equatable {
     var kind: ASRKind = .dashscopeQwen
     var endpoint: String = Defaults.dashscopeASREndpoint
-    var apiKey: String = ""
     var model: String = Defaults.qwenASRModel
-    var language: String = ""            // 空 = 自动；"zh" / "en" 等
-    var customPrompt: String = ""        // 术语/热词提示，部分服务支持
+    var language: String = ""
+    var customPrompt: String = ""
+    var uploadFormat: UploadFormat = .wav
+    /// 长录音分段长度（秒）。Typeless 用 3 秒流式分片；我们把批量接口切成 25 秒。
+    var chunkSeconds: Double = 25
+    /// 边录边识别间隔（秒），0 = 关闭。开启后边说边出字。
+    var partialSeconds: Double = 6
+    /// 仅内存 / Keychain，不落 UserDefaults。
+    var apiKey: String = ""
 
     static let `default` = ASRSettings()
 }
@@ -50,10 +90,12 @@ struct LLMSettings: Codable, Equatable {
     var enabled: Bool = true
     var kind: LLMKind = .openAICompatible
     var endpoint: String = Defaults.deepSeekEndpoint
-    var apiKey: String = ""
     var model: String = Defaults.deepSeekModel
     var systemPrompt: String = Defaults.defaultCleanupPrompt
     var temperature: Double = 0.2
+    /// 流式返回，边整理边上屏。
+    var streaming: Bool = true
+    var apiKey: String = ""
 
     static let `default` = LLMSettings()
 }
@@ -61,7 +103,6 @@ struct LLMSettings: Codable, Equatable {
 enum Defaults {
     static let dashscopeASREndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     static let qwenASRModel = "qwen-audio-3.1-asr-flash"
-    static let openAIASREndpoint = "https://api.openai.com/v1/audio/transcriptions"
     static let deepSeekEndpoint = "https://api.deepseek.com/v1/chat/completions"
     static let deepSeekModel = "deepseek-chat"
 
@@ -74,37 +115,47 @@ enum Defaults {
     4. 如果原文已经是通顺的书面语，原样返回。
     5. 只输出最终文本，不要任何解释、前缀、引号或 Markdown。
     """
-
-    static let defaultASRTerms = ""
 }
 
-/// 设置读写：优先写 App Group，读不到就退回 App 自己的 UserDefaults。
-/// 键盘扩展只需要读“是否已配置”和状态，不接触密钥。
+/// 设置读写。
+/// - 结构化配置走 UserDefaults（版本化 key，避免旧结构反序列化失败）。
+/// - API Key 只走 Keychain，绝不出现在配置文件里。
 enum SettingsStore {
+    private static let asrKey = "settings.v2.asr"
+    private static let llmKey = "settings.v2.llm"
+    private static let asrAccount = "asr.apiKey"
+    private static let llmAccount = "llm.apiKey"
+
     static func load() -> (asr: ASRSettings, llm: LLMSettings) {
-        let store = UserDefaults(suiteName: SharedStore.groupIdentifier)
-        func data(_ key: String) -> Data? {
-            (SharedStore.defaults?.data(forKey: key)) ?? store?.data(forKey: key) ?? UserDefaults.standard.data(forKey: key)
-        }
-        let asr = data("asrSettings").flatMap { try? JSONDecoder().decode(ASRSettings.self, from: $0) } ?? .default
-        let llm = data("llmSettings").flatMap { try? JSONDecoder().decode(LLMSettings.self, from: $0) } ?? .default
+        var asr = decode(ASRSettings.self, key: asrKey) ?? .default
+        var llm = decode(LLMSettings.self, key: llmKey) ?? .default
+        asr.apiKey = KeychainStore.get(account: asrAccount)
+        llm.apiKey = KeychainStore.get(account: llmAccount)
         return (asr, llm)
     }
 
     static func save(asr: ASRSettings, llm: LLMSettings) {
-        let encoder = JSONEncoder()
-        guard let asrData = try? encoder.encode(asr), let llmData = try? encoder.encode(llm) else { return }
-        SharedStore.defaults?.set(asrData, forKey: "asrSettings")
-        SharedStore.defaults?.set(llmData, forKey: "llmSettings")
-        UserDefaults.standard.set(asrData, forKey: "asrSettings")
-        UserDefaults.standard.set(llmData, forKey: "llmSettings")
-    }
-
-    static func markConfigured(_ configured: Bool) {
-        SharedStore.defaults?.set(configured, forKey: "configured")
+        // 密钥单独存 Keychain；结构体落盘前清空，避免误写。
+        var asrCopy = asr; asrCopy.apiKey = ""
+        var llmCopy = llm; llmCopy.apiKey = ""
+        encode(asrCopy, key: asrKey)
+        encode(llmCopy, key: llmKey)
+        KeychainStore.set(asr.apiKey, account: asrAccount)
+        KeychainStore.set(llm.apiKey, account: llmAccount)
+        KeyboardChannel.publishConfiguration(configured: !asr.apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     static var isConfigured: Bool {
-        SharedStore.defaults?.bool(forKey: "configured") ?? false
+        !KeychainStore.get(account: asrAccount).isEmpty
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private static func encode<T: Encodable>(_ value: T, key: String) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 }

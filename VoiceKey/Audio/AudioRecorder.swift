@@ -71,7 +71,15 @@ final class AudioRecorder {
         isRunning = true
     }
 
-    /// 停止并返回 WAV 数据；无有效音频时返回 nil。
+    /// 读取从 `offset` 字节开始的 PCM 增量，用于边录边识别的分段提交。
+    func pcm(from offset: Int) -> (data: Data, total: Int) {
+        lock.lock(); defer { lock.unlock() }
+        let total = pcm.count
+        guard offset >= 0, offset < total else { return (Data(), total) }
+        return (pcm.subdata(in: offset..<total), total)
+    }
+
+    /// 停止并返回原始 PCM16（16 kHz 单声道）；无有效音频时返回 nil。
     func stop() -> Data? {
         guard isRunning else { return nil }
         engine.inputNode.removeTap(onBus: 0)
@@ -84,8 +92,8 @@ final class AudioRecorder {
         let samples = pcm
         pcm.removeAll(keepingCapacity: false)
         lock.unlock()
-        guard samples.count > Int(Self.targetSampleRate / 2) else { return nil }   // < 0.5 s 视为误触
-        return Self.wav(fromPCM16: samples)
+        guard samples.count > Int(Self.targetSampleRate / 2) else { return nil }   // < 0.25 s 视为误触
+        return samples
     }
 
     func cancel() {

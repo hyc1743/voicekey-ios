@@ -68,6 +68,9 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$APP/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APP/PlugIns/VoiceKeyKeyboard.appex/Info.plist"
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:RequestsOpenAccess' "$APP/PlugIns/VoiceKeyKeyboard.appex/Info.plist"
+          echo "-- 画中画待命素材 --"
+          find "$APP" -name 'Standby.mp4' | grep -q .
+          find "$APP" -name 'StandbyHidden.mp4' | grep -q .
           mkdir -p dist "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/VoiceKey.app"
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/dist/VoiceKey-unsigned.ipa" Payload)

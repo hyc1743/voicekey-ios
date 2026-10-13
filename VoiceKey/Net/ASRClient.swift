@@ -16,30 +16,30 @@ struct ASRClient {
     /// 最近一次请求/响应的脱敏摘要，供诊断页展示。
     static var lastExchange: String = ""
 
-    func transcribe(wav: Data, settings: ASRSettings, terms: [String]) async throws -> String {
+    func transcribe(audio: Data, format: UploadFormat, settings: ASRSettings, terms: [String]) async throws -> String {
         guard !settings.apiKey.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ServiceError(message: "缺少语音识别 API Key", detail: "请在设置里填写")
         }
-        guard !wav.isEmpty else { throw ServiceError(message: "没有可识别的音频") }
+        guard !audio.isEmpty else { throw ServiceError(message: "没有可识别的音频") }
 
         switch settings.kind {
         case .dashscopeQwen:
-            return try await transcribeDashScope(wav: wav, settings: settings, terms: terms)
+            return try await transcribeDashScope(audio: audio, format: format, settings: settings, terms: terms)
         case .openAITranscriptions:
-            return try await transcribeMultipart(wav: wav, settings: settings, terms: terms)
+            return try await transcribeMultipart(audio: audio, format: format, settings: settings, terms: terms)
         }
     }
 
     // MARK: - 阿里云百炼（DashScope 原生多模态接口）
 
-    private func transcribeDashScope(wav: Data, settings: ASRSettings, terms: [String]) async throws -> String {
+    private func transcribeDashScope(audio: Data, format: UploadFormat, settings: ASRSettings, terms: [String]) async throws -> String {
         guard let url = URL(string: settings.endpoint), url.scheme != nil else {
             throw ServiceError(message: "语音识别接口地址无效", detail: settings.endpoint)
         }
         var content: [[String: Any]] = []
         let instruction = Self.instruction(prompt: settings.customPrompt, terms: terms, language: settings.language)
         if !instruction.isEmpty { content.append(["text": instruction]) }
-        content.append(["audio": "data:audio/wav;base64,\(wav.base64EncodedString())"])
+        content.append(["audio": "data:\(format.mimeType);base64,\(audio.base64EncodedString())"])
 
         var parameters: [String: Any] = [:]
         if !settings.language.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -59,7 +59,7 @@ struct ASRClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\naudio=\(wav.count) bytes\n"
+        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n格式=\(format.rawValue) 大小=\(audio.count) bytes\n"
             + Self.instruction(prompt: settings.customPrompt, terms: terms, language: settings.language)
         let data = try await send(request, provider: "阿里云百炼")
         return try Self.parseText(data)
@@ -67,7 +67,7 @@ struct ASRClient {
 
     // MARK: - OpenAI 兼容 /audio/transcriptions
 
-    private func transcribeMultipart(wav: Data, settings: ASRSettings, terms: [String]) async throws -> String {
+    private func transcribeMultipart(audio: Data, format: UploadFormat, settings: ASRSettings, terms: [String]) async throws -> String {
         guard let url = URL(string: settings.endpoint), url.scheme != nil else {
             throw ServiceError(message: "语音识别接口地址无效", detail: settings.endpoint)
         }
@@ -80,8 +80,8 @@ struct ASRClient {
         if !settings.language.isEmpty { field("language", settings.language) }
         let prompt = Self.instruction(prompt: settings.customPrompt, terms: terms, language: "")
         if !prompt.isEmpty { field("prompt", prompt) }
-        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
-        body.append(wav)
+        body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.\(format.fileExtension)\"\r\nContent-Type: \(format.mimeType)\r\n\r\n".utf8))
+        body.append(audio)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
 
         var request = URLRequest(url: url)
@@ -91,7 +91,7 @@ struct ASRClient {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
-        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\naudio=\(wav.count) bytes"
+        Self.lastExchange = "POST \(url.absoluteString)\nmodel=\(settings.model)\n格式=\(format.rawValue) 大小=\(audio.count) bytes"
         let data = try await send(request, provider: "语音识别")
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = object["text"] as? String {

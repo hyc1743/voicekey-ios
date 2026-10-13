@@ -187,6 +187,43 @@ enum SharedStore {
     }
 }
 
+/// 键盘可见的少量字段。密钥、历史、原文都不进这里。
+enum KeyboardChannel {
+    static func publishConfiguration(configured: Bool) {
+        SharedStore.defaults?.set(configured, forKey: "configured")
+        SharedStore.post(signal: .ready)
+    }
+
+    static var isConfigured: Bool {
+        SharedStore.defaults?.bool(forKey: "configured") ?? false
+    }
+
+    /// 边录边识别时把已识别的片段推给键盘显示。
+    static func publishPartial(_ text: String) {
+        SharedStore.defaults?.set(text, forKey: "partialText")
+        SharedStore.post(SharedStore.eventNotification)
+    }
+
+    static var partialText: String {
+        SharedStore.defaults?.string(forKey: "partialText") ?? ""
+    }
+
+    static func clearPartial() {
+        SharedStore.defaults?.removeObject(forKey: "partialText")
+    }
+
+    static func publishStandby(active: Bool, mode: String) {
+        SharedStore.defaults?.set(active, forKey: "standbyActive")
+        SharedStore.defaults?.set(mode, forKey: "standbyMode")
+    }
+
+    static var standbyDescription: String {
+        let active = SharedStore.defaults?.bool(forKey: "standbyActive") ?? false
+        let mode = SharedStore.defaults?.string(forKey: "standbyMode") ?? "-"
+        return active ? "\(mode) 待命中" : "未开启待命"
+    }
+}
+
 // MARK: - 协议负载
 
 struct DictationRequest: Codable, Equatable {
