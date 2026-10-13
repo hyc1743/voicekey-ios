@@ -114,6 +114,25 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 > 教训：早期版本我用 `qwen3` 族的 body（`content:[{audio}]`）+ 字符串 `sample_rate` + 自创的
 > `parameters.vocabulary` 去调 `qwen-audio-3.1-asr-flash`，三处都不对——现已按上述依据纠正。
 
+## 四之三、DeepSeek 协议依据（官方文档实测）
+
+文本整理默认接 DeepSeek，字段与端点取自**官方文档站**（`api-docs.deepseek.com`，可直接抓取）：
+
+| 项 | 官方内容 | 本项目 |
+|---|---|---|
+| 端点 | `POST https://api.deepseek.com/chat/completions`（官方 curl 示例；文档已不再出现 `/v1`） | `Defaults.deepSeekEndpoint`，老配置里的 `/v1/chat/completions` 会自动改写 |
+| 模型 | `deepseek-flash`（推荐）/ `deepseek-v4-pro`；旧 `deepseek-v4-flash*` 仅临时兼容 | `Defaults.deepSeekModel = deepseek-flash` |
+| **`deepseek-chat` / `deepseek-reasoner`** | **2026-04-24 公告：将于 2026-07-24 停用**（当时指向 v4-flash 的非思考/思考模式） | 老配置启动时**自动迁移**到 `deepseek-flash`，并在诊断页提示 |
+| 思考模式 | 默认开启；`{"thinking":{"type":"enabled|disabled"}}`，强度 `{"reasoning_effort":"low|high|max"}` | 整理任务默认**关闭**（省时省钱、输出直接）；设置里可开 |
+| 思维链 | 思考模式下 `reasoning_content` 与 `content` 同级返回 | 只取 `content`；若只拿到思维链则报错并提示关闭思考模式 |
+| `temperature` | 0–2，默认 1 | 默认 0.2（更确定），可调 |
+| `top_p` | **仅思考模式生效**，有效范围 0.95–1.0；非思考模式固定 1.0 且忽略传入值 | 不发送 |
+| 流式 | data-only SSE，以 `data: [DONE]` 结束 | `streamChat` 按此解析 |
+| 扩展字段兼容性 | `thinking`/`reasoning_effort` 是 DeepSeek 专有 | 只在端点/模型是 DeepSeek 时才发送，避免其它 OpenAI 兼容网关报未知字段 |
+
+> 另外核对过官方 changelog：2026-07-31 V4-Flash 公测、2026-08-13 V4-Pro GA、2026-09-10 V4.1-Flash 发布
+> （"change the model name to `deepseek-flash`"）。所以本项目 v0.1.x 里的 `deepseek-chat` 默认值**早已失效**，已修正。
+
 ## 五、配置云端服务
 
 ### 语音识别：阿里云百炼（默认）

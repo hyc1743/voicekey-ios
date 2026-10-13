@@ -125,7 +125,17 @@ struct LLMSettings: Codable, Equatable {
     var temperature: Double = 0.2
     /// 流式返回，边整理边上屏。
     var streaming: Bool = true
+    /// DeepSeek 思考模式（官方默认开启）。整理任务不需要思维链，默认关闭。
+    var thinking: Bool = false
+    /// 思考强度：low / high / max（仅在思考模式开启时发送）。
+    var reasoningEffort: String = "low"
     var apiKey: String = ""
+
+    /// 是否是 DeepSeek 官方端点：只有它认识 thinking / reasoning_effort 这些扩展字段，
+    /// 别的 OpenAI 兼容网关收到未知字段可能直接报错。
+    var isDeepSeekEndpoint: Bool {
+        endpoint.lowercased().contains("api.deepseek.com") || model.lowercased().hasPrefix("deepseek")
+    }
 
     static let `default` = LLMSettings()
 }
@@ -133,8 +143,8 @@ struct LLMSettings: Codable, Equatable {
 enum Defaults {
     static let dashscopeASREndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     static let qwenASRModel = "qwen-audio-3.1-asr-flash"
-    static let deepSeekEndpoint = "https://api.deepseek.com/v1/chat/completions"
-    static let deepSeekModel = "deepseek-chat"
+    static let deepSeekEndpoint = "https://api.deepseek.com/chat/completions"
+    static let deepSeekModel = "deepseek-flash"
 
     static let defaultCleanupPrompt = """
     你是一个语音输入后处理器。用户给你一段语音识别的原始文本，请输出可以直接上屏的最终文本。
@@ -156,11 +166,29 @@ enum SettingsStore {
     private static let asrAccount = "asr.apiKey"
     private static let llmAccount = "llm.apiKey"
 
+    /// 最近一次因官方变更而自动修正的项，供诊断页显示。
+    private(set) static var migrationNotes: [String] = []
+
     static func load() -> (asr: ASRSettings, llm: LLMSettings) {
         var asr = decode(ASRSettings.self, key: asrKey) ?? .default
         var llm = decode(LLMSettings.self, key: llmKey) ?? .default
+        var notes: [String] = []
+        // 2026-04-24 官方公告：deepseek-chat / deepseek-reasoner 已于 2026-07-24 停用，
+        // 现行模型名为 deepseek-flash（推荐）或 deepseek-v4-pro。
+        if llm.endpoint.lowercased().contains("api.deepseek.com") {
+            let legacy: Set<String> = ["deepseek-chat", "deepseek-reasoner"]
+            if legacy.contains(llm.model.lowercased()) {
+                notes.append("整理模型 \(llm.model) 已由官方停用，已自动改为 \(Defaults.deepSeekModel)")
+                llm.model = Defaults.deepSeekModel
+            }
+            if llm.endpoint.contains("/v1/chat/completions") {
+                notes.append("整理接口已从 /v1/chat/completions 改为官方文档写的 /chat/completions")
+                llm.endpoint = Defaults.deepSeekEndpoint
+            }
+        }
         asr.apiKey = KeychainStore.get(account: asrAccount)
         llm.apiKey = KeychainStore.get(account: llmAccount)
+        migrationNotes = notes
         return (asr, llm)
     }
 

@@ -57,6 +57,17 @@ struct SettingsView: View {
                     TextField("模型", text: $engine.llm.model)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     Toggle("流式返回（边整理边上屏）", isOn: $engine.llm.streaming)
+                    if engine.llm.isDeepSeekEndpoint {
+                        Toggle("深度思考模式（官方默认开，整理不需要）", isOn: $engine.llm.thinking)
+                        if engine.llm.thinking {
+                            Picker("思考强度", selection: $engine.llm.reasoningEffort) {
+                                Text("low").tag("low")
+                                Text("high").tag("high")
+                                Text("max").tag("max")
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                    }
                     VStack(alignment: .leading) {
                         Text("温度 \(engine.llm.temperature, specifier: "%.1f")").font(.caption)
                         Slider(value: $engine.llm.temperature, in: 0...1, step: 0.1)
@@ -65,7 +76,7 @@ struct SettingsView: View {
                 } header: {
                     Text("文字整理 LLM")
                 } footer: {
-                    Text("默认：DeepSeek deepseek-chat（OpenAI 兼容）。流式开启后整理结果逐字上屏；整理失败或明显跑偏会回退原始识别结果，不会丢字。")
+                    Text("默认：DeepSeek deepseek-flash（官方现行模型名）。接口为 https://api.deepseek.com/chat/completions，思考模式默认关闭。\n官方已停用 deepseek-chat / deepseek-reasoner（2026-04-24 公告，2026-07-24 生效）；老配置会被自动改到 deepseek-flash 并在诊断页提示。\n流式开启后整理结果逐字上屏；整理失败或明显跑偏会回退原始识别结果，不会丢字。")
                 }
 
                 Section {

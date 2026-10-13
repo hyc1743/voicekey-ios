@@ -92,6 +92,9 @@ final class DictationEngine: ObservableObject {
                 KeyboardChannel.publishStandby(active: status.active, mode: status.hidden ? "画中画" : "画中画(可见)")
             }
         }
+        if !SettingsStore.migrationNotes.isEmpty {
+            diagnostics = "设置已按官方变更自动修正：\n- " + SettingsStore.migrationNotes.joined(separator: "\n- ")
+        }
         history.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)

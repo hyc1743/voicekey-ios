@@ -26,7 +26,7 @@ struct LLMClient {
         }
 
         let wantsStream = settings.streaming && onDelta != nil
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": settings.model.isEmpty ? Defaults.deepSeekModel : settings.model,
             "messages": [
                 ["role": "system", "content": system],
@@ -35,6 +35,12 @@ struct LLMClient {
             "temperature": settings.temperature,
             "stream": wantsStream
         ]
+        // DeepSeek 官方文档：思考模式默认开启，用 thinking.type 切换；
+        // 只有官方端点认识这些扩展字段，其它兼容网关不发送。
+        if settings.isDeepSeekEndpoint {
+            body["thinking"] = ["type": settings.thinking ? "enabled" : "disabled"]
+            if settings.thinking { body["reasoning_effort"] = settings.reasoningEffort }
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -87,6 +93,7 @@ struct LLMClient {
         let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
         var accumulated = ""
         var firstChunk = ""
+        var sawReasoning = false
 
         // 有些网关不返回 SSE，退化成一次性读取。
         guard contentType.contains("text/event-stream") else {
@@ -118,6 +125,9 @@ struct LLMClient {
                       let choice = choices.first else { continue }
 
                 if let delta = choice["delta"] as? [String: Any] {
+                    if let reasoning = delta["reasoning_content"] as? String, !reasoning.isEmpty {
+                        sawReasoning = true
+                    }
                     let piece = Self.text(from: delta["content"])
                     if !piece.isEmpty {
                         accumulated += piece
@@ -136,6 +146,10 @@ struct LLMClient {
             }
         }
         Self.lastExchange += "\nHTTP \(http.statusCode)（SSE）\n收到 \(accumulated.count) 字"
+            + (sawReasoning ? "（期间有思维链输出）" : "")
+        if accumulated.isEmpty, sawReasoning {
+            throw ServiceError(message: "模型只返回了思考过程", detail: "请在设置里关闭「深度思考模式」后重试")
+        }
         return accumulated
     }
 
@@ -156,7 +170,10 @@ struct LLMClient {
         if let message = choice["message"] as? [String: Any] {
             let value = text(from: message["content"])
             if !value.isEmpty { return value }
-            if let reasoning = message["reasoning_content"] as? String, !reasoning.isEmpty { return reasoning }
+            // 思考模式下思维链在 reasoning_content，不能当成整理结果上屏。
+            if let reasoning = message["reasoning_content"] as? String, !reasoning.isEmpty {
+                throw ServiceError(message: "模型只返回了思考过程", detail: "请在设置里关闭「深度思考模式」后重试")
+            }
         }
         if let delta = choice["delta"] as? [String: Any] {
             let value = text(from: delta["content"])
