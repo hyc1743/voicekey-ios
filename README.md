@@ -193,3 +193,12 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 - 网络请求失败一律**保留原文**（整理失败回退原始识别），不静默丢字。
 - 共享通道里所有命令带 `createdAt`，超过 15 秒的过期指令直接丢弃。
 - 不提交 `.xcodeproj`（由 XcodeGen 生成），不提交构建产物。
+
+---
+
+## 许可
+
+MIT License，见 [LICENSE](LICENSE)。
+
+> 提示：`VoiceKey/Audio/PiPVisibilityAdapter.m` 与键盘里的 `openViaResponderChain` 使用了系统私有接口，
+> 仅适合自签安装与个人研究；上架 App Store 前请按「私有 API 策略」一节产出合规构建。
