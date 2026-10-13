@@ -1,0 +1,94 @@
+name: Build iPhone IPA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          xcodegen --version
+
+      # 快速失败：先只做类型检查（不生成代码、不签名），几十秒内暴露绝大多数编译错误。
+      - name: Type-check gate (fast fail)
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "== app target =="
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0 -swift-version 5 \
+            $(find Shared VoiceKey -name '*.swift' | sort)
+          echo "== keyboard target =="
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0 -swift-version 5 \
+            -application-extension \
+            $(find Shared VoiceKeyKeyboard -name '*.swift' | sort)
+          echo "type-check OK"
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project VoiceKey.xcodeproj \
+            -scheme VoiceKey \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/VoiceKey.app"
+          test -d "$APP"
+          test -d "$APP/PlugIns/VoiceKeyKeyboard.appex"
+          echo "-- 校验关键配置 --"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes:0' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APP/PlugIns/VoiceKeyKeyboard.appex/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:RequestsOpenAccess' "$APP/PlugIns/VoiceKeyKeyboard.appex/Info.plist"
+          mkdir -p dist "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/VoiceKey.app"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/dist/VoiceKey-unsigned.ipa" Payload)
+          unzip -t dist/VoiceKey-unsigned.ipa | tail -1
+          lipo -archs "$APP/VoiceKey"
+          (cd dist && shasum -a 256 VoiceKey-unsigned.ipa | tee SHA256SUMS.txt)
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceKey-unsigned-ipa
+          path: |
+            dist/VoiceKey-unsigned.ipa
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
