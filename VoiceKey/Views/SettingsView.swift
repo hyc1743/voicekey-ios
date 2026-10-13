@@ -11,6 +11,8 @@ struct SettingsView: View {
                         ForEach(ASRKind.allCases) { kind in Text(kind.title).tag(kind) }
                     }
                     Text(engine.asr.kind.hint).font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("实际协议族", value: engine.asr.resolvedKind == .dashscopeInputAudio ? "input_audio"
+                                   : (engine.asr.resolvedKind == .dashscopeQwen3 ? "qwen3" : "openai-multipart"))
                     TextField("接口地址", text: $engine.asr.endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
                     SecureField("API Key（存 Keychain）", text: $engine.asr.apiKey)
@@ -19,6 +21,10 @@ struct SettingsView: View {
                     TextField("语言（可留空自动）", text: $engine.asr.language)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("识别提示词（可选）", text: $engine.asr.customPrompt, axis: .vertical).lineLimit(2...4)
+
+                    Toggle("把个人术语作为热词提交", isOn: $engine.asr.useVocabulary)
+                    TextField("format 覆盖（留空自动）", text: $engine.asr.formatHintOverride)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
 
                     Picker("上传格式", selection: $engine.asr.uploadFormat) {
                         ForEach(UploadFormat.allCases) { format in Text(format.title).tag(format) }
@@ -34,7 +40,7 @@ struct SettingsView: View {
                 } header: {
                     Text("语音识别 ASR")
                 } footer: {
-                    Text("默认：阿里云百炼 qwen-audio-3.1-asr-flash（DashScope 原生接口，Base64 直传）。\n长录音会按分段并发提交，比一次传整段更稳；开启「边录边识别」后边说边出字（会增加请求次数）。\nAAC/m4a 体积约为 WAV 的 1/20，但个别服务不认这个容器，报错时切回 WAV。")
+                    Text("默认：阿里云百炼 qwen-audio-3.1-asr-flash，走官方 input_audio 协议（content={type:input_audio}，参数 format/sample_rate/language_hints/vocabulary），依据百炼官方 CLI 的 asr-routes.ts。\n长录音按分段提交；开启「边录边识别」后边说边出字（会增加请求次数）。\nAAC/m4a 体积约为 WAV 的 1/20；若接口报格式错误，把上面的 format 覆盖改成 m4a 或切回 WAV。")
                 }
 
                 Section {

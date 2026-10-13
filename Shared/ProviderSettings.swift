@@ -1,21 +1,42 @@
 import Foundation
 
+/// ASR 协议族。默认按模型名自动判定，规则与百炼官方 CLI 的 asr-routes.ts 一致：
+/// `fun-asr-flash*` 与 `qwen-audio*-asr-flash` 走 input_audio 族；
+/// `qwen3-asr-flash` 走 content.audio + asr_options 族。
 enum ASRKind: String, Codable, CaseIterable, Identifiable {
-    case dashscopeQwen
+    case auto
+    case dashscopeInputAudio
+    case dashscopeQwen3
     case openAITranscriptions
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .dashscopeQwen: "阿里云百炼 Qwen ASR"
+        case .auto: "自动（按模型名判断协议族）"
+        case .dashscopeInputAudio: "百炼 input_audio 族"
+        case .dashscopeQwen3: "百炼 qwen3-asr-flash 族"
         case .openAITranscriptions: "OpenAI 兼容 /audio/transcriptions"
         }
     }
     var hint: String {
         switch self {
-        case .dashscopeQwen: "DashScope 原生多模态接口，音频以 Base64 直传，默认模型 qwen-audio-3.1-asr-flash。"
-        case .openAITranscriptions: "multipart 上传音频，适用于 Whisper、GLM、SenseVoice 等兼容服务。"
+        case .auto: "推荐。模型名以 qwen-audio / fun-asr-flash 开头走 input_audio 族，qwen3-asr-flash 走旧族。"
+        case .dashscopeInputAudio: "content 用 {type: input_audio}，参数 format/sample_rate/language_hints/vocabulary。"
+        case .dashscopeQwen3: "content 用 {audio}，参数 asr_options.language。"
+        case .openAITranscriptions: "multipart 上传，适用于 Whisper、GLM、SenseVoice 等兼容服务。"
         }
+    }
+
+    /// 官方 CLI 的判定顺序：realtime/streaming、filetrans 都另有接口，
+    /// 这里只覆盖同步 flash 两类。
+    static func resolve(model: String) -> ASRKind {
+        let name = model.lowercased()
+        if name.contains("realtime") || name.contains("streaming") { return .dashscopeInputAudio }
+        if name.contains("filetrans") { return .dashscopeInputAudio }
+        if name.hasPrefix("fun-asr-flash") { return .dashscopeInputAudio }
+        if name.hasPrefix("qwen-audio") && name.contains("asr-flash") { return .dashscopeInputAudio }
+        if name.hasPrefix("qwen3-asr-flash") { return .dashscopeQwen3 }
+        return .dashscopeInputAudio
     }
 }
 
@@ -43,7 +64,7 @@ enum UploadFormat: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { self == .wav ? "WAV（兼容性最好）" : "AAC/m4a（体积约 1/20）" }
     var fileExtension: String { self == .wav ? "wav" : "m4a" }
-    var mimeType: String { self == .wav ? "audio/wav" : "audio/mp4" }
+    var mimeType: String { self == .wav ? "audio/x-wav" : "audio/mp4" }
 }
 
 /// 后台待命方式。
@@ -70,7 +91,7 @@ enum StandbyMode: String, Codable, CaseIterable, Identifiable {
 }
 
 struct ASRSettings: Codable, Equatable {
-    var kind: ASRKind = .dashscopeQwen
+    var kind: ASRKind = .auto
     var endpoint: String = Defaults.dashscopeASREndpoint
     var model: String = Defaults.qwenASRModel
     var language: String = ""
@@ -80,10 +101,19 @@ struct ASRSettings: Codable, Equatable {
     var chunkSeconds: Double = 25
     /// 边录边识别间隔（秒），0 = 关闭。开启后边说边出字。
     var partialSeconds: Double = 6
+    /// 术语是否作为热词提交（input_audio 族的 parameters.vocabulary）。
+    var useVocabulary: Bool = true
+    /// 手动覆盖 parameters.format；留空按数据 URI 推断（官方同款规则）。
+    var formatHintOverride: String = ""
     /// 仅内存 / Keychain，不落 UserDefaults。
     var apiKey: String = ""
 
     static let `default` = ASRSettings()
+
+    /// 实际使用的协议族。
+    var resolvedKind: ASRKind {
+        kind == .auto ? ASRKind.resolve(model: model) : kind
+    }
 }
 
 struct LLMSettings: Codable, Equatable {

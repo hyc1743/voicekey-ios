@@ -88,6 +88,25 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 ---
 
+## 四之二、ASR 协议依据（为什么这样发请求）
+
+代码里的协议族判定与请求体照抄**百炼官方 CLI** `modelstudioai/cli`
+（公开仓库）的 `packages/core/src/client/asr-routes.ts`：
+
+| 官方逻辑 | 本项目对应 |
+|---|---|
+| `INPUT_AUDIO_FLASH_PREFIXES = ["fun-asr-flash", "qwen-audio"]`；`qwen-audio*` 且含 `asr-flash` → input_audio 族 | `ASRKind.resolve(model:)`，默认 `kind = .auto` |
+| input_audio 族：`content:[{type:"input_audio",input_audio:{data}}]`，`parameters:{format,sample_rate:"16000",language_hints,vocabulary_id,vocabulary}`，上下文用**独立的 `input_text` 消息且排在音频之前** | `transcribeInputAudioFamily(...)` |
+| `qwen3-asr-flash` → `content:[{audio}]` + `parameters.asr_options.language` | `transcribeQwen3Family(...)` |
+| 取文顺序：input_audio 族 `output.text` → `output.sentence.text` → `output.output.sentence.text`；qwen3 族 `output.choices[].message.content` | `extractInputAudioText` / `extractQwen3Text` |
+| `inferAudioFormatHint`：`audio/mpeg→mp3`、`audio/x-wav|wave→wav`、否则取子类型 | `ASRClient.inferFormatHint(mimeType:)`，可用设置里的「format 覆盖」手动改 |
+
+同步调用会带 `X-DashScope-SSE: disable`，直接拿一次性 JSON。**术语**在 input_audio 族里作为
+`parameters.vocabulary`（词→权重 4）提交，这是官方支持的热词通道，比塞进提示词更有效。
+
+> 早期版本我曾按 `qwen3` 族的写法（`content:[{audio}]`）去调 `qwen-audio-3.1-asr-flash`，属于**协议族用错**，
+> 已按官方实现纠正；设置页会显示"实际协议族"以便核对。
+
 ## 五、配置云端服务
 
 ### 语音识别：阿里云百炼（默认）
