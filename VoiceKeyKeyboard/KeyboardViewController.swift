@@ -7,6 +7,45 @@ import UIKit
 /// 保留地球键（Apple 要求 needsInputModeSwitchKey 时提供，否则用户可能无法切回其它键盘）。
 final class KeyboardViewController: UIInputViewController {
 
+    // MARK: - 文案
+
+    private enum Copy {
+        // 状态药丸（短标签，2–3 字）
+        static let ready = "就绪"
+        static let listening = "聆听"
+        static let writing = "成文"
+        static let done = "完成"
+        static let failed = "异常"
+        static let offline = "离线"
+        static let asleep = "待唤醒"
+        static let limited = "受限"
+        static let jumping = "跳转"
+        static let hint = "提示"
+
+        // 主文案
+        static let idle = "轻点麦克风，说完即成文"
+        static let listeningStatus = "聆听中"
+        static let writingStatus = "正在成文"
+        static let readyStatus = "文本已就绪"
+        static let openingStatus = "正在唤起 VoiceKey"
+        static let failedStatus = "未能完成"
+        static let notReadyStatus = "VoiceKey 未在后台"
+        static let offlineStatus = "尚未连接主 App"
+        static let noAccessStatus = "需要「允许完全访问」"
+        static let nothingStatus = "没有可写入的内容"
+        static let timeoutStatus = "未收到结果"
+
+        // 副文案
+        static let idleHint = "静音 5 秒自动成文"
+        static let listeningHint = "轻点结束 · 或静音自动结束"
+        static let openingHint = "录完自动跳回，回来即写入"
+        static let accessHint = "设置 › 通用 › 键盘 › VoiceKey"
+        static let offlineHint = "打开 App 完成一次设置即可"
+        static let asleepHint = "轻点麦克风会跳转 App，录完自动返回"
+        static let timeoutHint = "请确认 App 已打开并配置好 API Key"
+        static func inserted(_ count: Int) -> String { "已写入 \(count) 字" }
+    }
+
     // MARK: - 调色板（跟随系统深浅色）
 
     private enum Palette {
@@ -242,11 +281,11 @@ final class KeyboardViewController: UIInputViewController {
             promptOpenApp(reason: "当前签名没有 App Group。")
             return
         }
-        setState("确认中", color: .systemOrange, status: "正在确认 App 状态…", hint: "")
+        setState(Copy.listening, color: .systemOrange, status: Copy.openingStatus, hint: "")
         if pingMainApp() {
             startViaSharedChannel()
         } else {
-            promptOpenApp(reason: "麦克风未常开，需要到 App 里录（录完会自动跳回这个 App）。")
+            promptOpenApp(reason: "麦克风未常开。")
         }
     }
 
@@ -263,7 +302,7 @@ final class KeyboardViewController: UIInputViewController {
 
     private func stopRecording() {
         guard isRecording else { return }
-        setState("识别中", color: .systemOrange, status: "正在生成文字…", hint: "")
+        setState(Copy.writing, color: .systemOrange, status: Copy.writingStatus, hint: "")
         send(source: "stop")
         startPolling()
     }
@@ -275,11 +314,11 @@ final class KeyboardViewController: UIInputViewController {
             return
         }
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            setState("无内容", color: .systemGray, status: "没有可插入的内容", hint: "先说一句，或让 App 写回结果。")
+            setState(Copy.hint, color: .systemGray, status: Copy.nothingStatus, hint: "先说一句，或让 App 写回结果")
             return
         }
         textDocumentProxy.insertText(text)
-        setState("已插入", color: .systemGreen, status: "已插入剪贴板内容（\(text.count) 字）", hint: "")
+        setState(Copy.done, color: .systemGreen, status: Copy.inserted(text.count) + "（剪贴板）", hint: "")
     }
 
     @objc private func returnTapped() {
@@ -317,7 +356,7 @@ final class KeyboardViewController: UIInputViewController {
         SharedStore.remove(name: "result.json")
         SharedStore.post(SharedStore.commandNotification)
         isRecording = true
-        setState("录音中", color: .systemRed, status: "正在开始录音…", hint: "点麦克风或松手结束")
+        setState(Copy.listening, color: .systemRed, status: Copy.listeningStatus, hint: Copy.listeningHint)
         applyMicAppearance(recording: true)
         startPolling()
     }
@@ -352,7 +391,7 @@ final class KeyboardViewController: UIInputViewController {
         applyMicAppearance(recording: false)
         liveContainer.isHidden = true
         stopPolling()
-        setState("已插入", color: .systemGreen, status: "已插入 \(text.count) 个字", hint: "")
+        setState(Copy.done, color: .systemGreen, status: Copy.inserted(text.count), hint: "")
     }
 
     private func refresh() {
@@ -376,39 +415,38 @@ final class KeyboardViewController: UIInputViewController {
         case .recording:
             isRecording = true
             applyMicAppearance(recording: true)
-            setState("录音中", color: .systemRed, status: "正在录音…", hint: "点麦克风或松手结束")
+            setState(Copy.listening, color: .systemRed, status: Copy.listeningStatus, hint: Copy.listeningHint)
         case .processing:
             applyMicAppearance(recording: false)
-            setState("识别中", color: .systemOrange, status: "正在识别与整理…", hint: "")
+            setState(Copy.writing, color: .systemOrange, status: Copy.writingStatus, hint: "")
         case .ready:
             isRecording = false
             applyMicAppearance(recording: false)
-            setState("完成", color: .systemGreen, status: "已完成", hint: "结果会自动插入")
+            setState(Copy.done, color: .systemGreen, status: Copy.readyStatus, hint: "即将写入输入框")
         case .error:
             isRecording = false
             applyMicAppearance(recording: false)
-            setState("出错", color: .systemRed, status: "出错了", hint: message)
+            setState(Copy.failed, color: .systemRed, status: Copy.failedStatus, hint: message)
         case .standby:
             isRecording = false
             applyMicAppearance(recording: false)
             if !hasFullAccess {
-                setState("需要完全访问", color: .systemRed, status: "", hint: "设置 → 通用 → 键盘 → VoiceKey")
+                setState(Copy.limited, color: .systemRed, status: Copy.noAccessStatus, hint: Copy.accessHint)
             } else if !KeyboardChannel.isConfigured {
-                setState("待命", color: .systemGreen, status: "点击麦克风开始说话", hint: "还没配置 API Key，请打开 App 设置。")
+                setState(Copy.ready, color: .systemGreen, status: Copy.idle, hint: "尚未配置 API Key，请在 App 内完成设置")
             } else {
-                setState("待命", color: .systemGreen, status: "点击麦克风开始说话",
-                         hint: KeyboardChannel.standbyDescription)
+                setState(Copy.ready, color: .systemGreen, status: Copy.idle,
+                         hint: KeyboardChannel.standbyDescription.isEmpty ? Copy.idleHint : KeyboardChannel.standbyDescription)
             }
         case .unavailable:
             isRecording = false
             applyMicAppearance(recording: false)
             if !hasFullAccess {
-                setState("需要完全访问", color: .systemRed, status: "", hint: "设置 → 通用 → 键盘 → VoiceKey")
+                setState(Copy.limited, color: .systemRed, status: Copy.noAccessStatus, hint: Copy.accessHint)
             } else if !SharedStore.isAvailable {
-                setState("未连接", color: .systemGray, status: "未连接主 App",
-                         hint: "当前签名没有 App Group，请用「打开 App + 左下角插入结果」。")
+                setState(Copy.offline, color: .systemGray, status: Copy.offlineStatus, hint: Copy.offlineHint)
             } else {
-                setState("未运行", color: .systemGray, status: "VoiceKey 未在后台", hint: "点麦克风会提示打开 App。")
+                setState(Copy.asleep, color: .systemGray, status: Copy.notReadyStatus, hint: Copy.asleepHint)
             }
         }
 
@@ -416,7 +454,7 @@ final class KeyboardViewController: UIInputViewController {
             stopPolling()
             isRecording = false
             applyMicAppearance(recording: false)
-            setState("无响应", color: .systemRed, status: "没有收到结果", hint: "请确认 App 已打开并配置好 API Key。")
+            setState(Copy.failed, color: .systemRed, status: Copy.timeoutStatus, hint: Copy.timeoutHint)
         }
     }
 
@@ -437,8 +475,8 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 打开宿主 App
 
     private func promptOpenApp(reason: String) {
-        setState("待启动", color: .systemOrange, status: "正在打开 VoiceKey",
-                 hint: "\(reason) 录完会自动跳回，回来即自动插入。")
+        setState(Copy.jumping, color: .systemOrange, status: Copy.openingStatus,
+                 hint: "\(reason) \(Copy.openingHint)")
         openContainingApp()
     }
 
@@ -481,6 +519,6 @@ final class KeyboardViewController: UIInputViewController {
             }
             responder = current.next
         }
-        setState("待启动", color: .systemRed, status: "无法自动打开 VoiceKey", hint: "请手动切到 App 使用。")
+        setState(Copy.asleep, color: .systemRed, status: "无法唤起 VoiceKey", hint: "请手动切到 App 使用")
     }
 }

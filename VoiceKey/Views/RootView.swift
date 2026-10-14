@@ -39,12 +39,12 @@ struct DictationView: View {
 
     private var stageText: String {
         switch engine.stage {
-        case .idle: "点一下开始说话"
-        case .recording: String(format: "录音中 %.1f 秒", engine.seconds)
-        case .transcribing: engine.progress.isEmpty ? "正在识别…" : engine.progress
-        case .cleaning: "正在整理…"
-        case .done: "完成，已复制到剪贴板"
-        case .failed: "失败"
+        case .idle: "轻点麦克风，说完即成文"
+        case .recording: String(format: "聆听中 · %.1f 秒", engine.seconds)
+        case .transcribing: engine.progress.isEmpty ? "正在识别" : engine.progress
+        case .cleaning: "正在成文"
+        case .done: "已写入剪贴板"
+        case .failed: "未能完成"
         }
     }
 
@@ -125,7 +125,7 @@ struct DictationView: View {
 
                     HStack(spacing: 12) {
                         Button("复制") { UIPasteboard.general.string = text }
-                        Button("再读一次") { engine.begin(source: "app") }
+                        Button("再说一次") { engine.begin(source: "app") }
                     }
                     .buttonStyle(.bordered)
                 }
@@ -186,7 +186,7 @@ struct HistoryView: View {
             }
             .overlay {
                 if engine.history.records.isEmpty {
-                    ContentUnavailableView("还没有记录", systemImage: "waveform", description: Text("说一句试试"))
+                    ContentUnavailableView("暂无记录", systemImage: "waveform", description: Text("说完一句，这里会自动留存"))
                 }
             }
             .navigationTitle("历史")

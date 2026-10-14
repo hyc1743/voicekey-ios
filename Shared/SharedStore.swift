@@ -217,10 +217,16 @@ enum KeyboardChannel {
         SharedStore.defaults?.set(mode, forKey: "standbyMode")
     }
 
+    /// 键盘上显示的一行状态说明；未开启待命时返回空串，由键盘回落到默认提示。
     static var standbyDescription: String {
         let active = SharedStore.defaults?.bool(forKey: "standbyActive") ?? false
-        let mode = SharedStore.defaults?.string(forKey: "standbyMode") ?? "-"
-        return active ? "\(mode) 待命中" : "未开启待命"
+        guard active else { return "" }
+        switch SharedStore.defaults?.string(forKey: "standbyMode") ?? "" {
+        case "麦克风常开": return "麦克风常开 · 随时可录"
+        case "画中画", "画中画(可见)": return "画中画待命 · 仅保进程"
+        case "静音输出": return "静音待命 · 仅保进程"
+        case let other: return other.isEmpty ? "" : "\(other) 待命"
+        }
     }
 }
 
