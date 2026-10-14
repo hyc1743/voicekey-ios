@@ -170,6 +170,8 @@ struct DiagnosticsView: View {
                     LabeledContent("阶段", value: phase.0.label)
                     LabeledContent("说明", value: phase.1.isEmpty ? "-" : phase.1)
                     LabeledContent("主 App 心跳", value: SharedStore.mainAppIsAlive ? "活跃" : "未检测到")
+                    LabeledContent("键盘上次检测", value: KeyboardChannel.lastPingDescription)
+                    LabeledContent("待命可后台开录", value: KeyboardChannel.standbySupportsBackgroundCapture ? "是" : "否")
                     LabeledContent("待命", value: engine.standbyStatus)
                 }
                 Section("实时识别片段") {

@@ -792,7 +792,7 @@ final class DictationEngine: ObservableObject {
                         self.warmDeadline = nil
                         self.recorder.disarm(deactivateSession: true)
                         self.standbyStatus = "麦克风常开已到期，需要打开 App 才能再次跨 App 输入"
-                        KeyboardChannel.publishStandby(active: false, mode: "已到期")
+                        KeyboardChannel.publishStandby(active: false, mode: "已到期", captureCapable: false)
                         SharedStore.publish(phase: .unavailable, message: "麦克风常开已到期")
                     }
                 }
@@ -827,7 +827,7 @@ final class DictationEngine: ObservableObject {
         } catch {
             pipRoute = ""
             standbyStatus = "画中画待命启动失败：\(error.localizedDescription)"
-            KeyboardChannel.publishStandby(active: false, mode: "失败")
+            KeyboardChannel.publishStandby(active: false, mode: "失败", captureCapable: false)
         }
     }
 
@@ -866,20 +866,20 @@ final class DictationEngine: ObservableObject {
             tearDownStandby(keepRecorderWarm: false, deactivateSession: true)
             warmExpiryTask?.cancel()
             standbyStatus = "未开启"
-            KeyboardChannel.publishStandby(active: false, mode: "未开启")
+            KeyboardChannel.publishStandby(active: false, mode: "未开启", captureCapable: false)
         case .microphoneWarm:
             tearDownStandby(keepRecorderWarm: true, deactivateSession: false)
             do {
                 try recorder.arm()
                 scheduleWarmExpiry()
                 standbyStatus = warmStandbyStatus
-                KeyboardChannel.publishStandby(active: true, mode: "麦克风常开")
+                KeyboardChannel.publishStandby(active: true, mode: "麦克风常开", captureCapable: recorder.isWarm)
                 publishPhase(.standby, message: "麦克风常开待命中")
             } catch {
                 let message = Self.audioFailureMessage(error, appActive: appIsActive, standby: standbyMode)
                 standbyStatus = "麦克风常开启动失败：\(message)"
                 diagnostics += "\n\n[待命] microphoneWarm arm 失败：\(error.localizedDescription)"
-                KeyboardChannel.publishStandby(active: false, mode: "失败")
+                KeyboardChannel.publishStandby(active: false, mode: "失败", captureCapable: false)
             }
         case .silentAudio:
             // 先放掉麦克风常开（会话、输入图），否则静音输出起不来。
@@ -888,10 +888,10 @@ final class DictationEngine: ObservableObject {
             do {
                 try silentStandby.start()
                 standbyStatus = "静音输出待命中（只保进程，不保后台开麦）"
-                KeyboardChannel.publishStandby(active: true, mode: "静音输出")
+                KeyboardChannel.publishStandby(active: true, mode: "静音输出", captureCapable: false)
             } catch {
                 standbyStatus = "静音待命启动失败：\(error.localizedDescription)"
-                KeyboardChannel.publishStandby(active: false, mode: "失败")
+                KeyboardChannel.publishStandby(active: false, mode: "失败", captureCapable: false)
             }
         case .pictureInPicture:
             tearDownStandby(keepRecorderWarm: false, deactivateSession: true)

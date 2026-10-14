@@ -90,6 +90,11 @@ final class KeyboardViewController: UIInputViewController {
     private var activeSession = ""
     private var didOpenContainingApp = false
     private var isRecording = false
+    private var longPressActive = false
+    private var pingTimer: Timer?
+    private var pendingPingID: String?
+    private var pingStartedAt: Date?
+    private var pingDeadline: Date?
 
     // MARK: - 生命周期
 
@@ -113,6 +118,7 @@ final class KeyboardViewController: UIInputViewController {
         // 键盘消失时若还在录音，主动停止，避免麦克风一直开着。
         if isRecording, !activeSession.isEmpty { send(source: "stop") }
         stopPolling()
+        stopPing()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -271,83 +277,90 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 动作
 
     @objc private func micTapped() {
+        // 长按手势已经开始时不再处理点击，否则"按久一点"会变成开始后立刻结束。
+        guard !longPressActive else { return }
         if isRecording { stopRecording(); return }
-        guard hasFullAccess else {
-            setState("需要完全访问", color: .systemRed,
-                     status: "", hint: "设置 → 通用 → 键盘 → VoiceKey，打开「允许完全访问」。")
-            return
-        }
-        guard SharedStore.isAvailable else {
-            promptOpenApp(reason: "当前签名没有 App Group。")
-            return
-        }
-        setState(Copy.listening, color: .systemOrange, status: Copy.openingStatus, hint: "")
-        if pingMainApp() {
-            startViaSharedChannel()
-        } else {
-            promptOpenApp(reason: "麦克风未常开。")
-        }
+        beginAttempt()
     }
 
     @objc private func micLongPressed(_ gesture: UILongPressGestureRecognizer) {
         switch gesture.state {
         case .began:
-            if !isRecording { micTapped() }
+            longPressActive = true
+            if !isRecording && pingTimer == nil { beginAttempt() }
         case .ended, .cancelled, .failed:
+            longPressActive = false
             if isRecording { stopRecording() }
         default:
             break
         }
     }
 
-    private func stopRecording() {
-        guard isRecording else { return }
-        setState(Copy.writing, color: .systemOrange, status: Copy.writingStatus, hint: "")
-        send(source: "stop")
-        startPolling()
-    }
-
-    @objc private func insertTapped() {
-        if let result = SharedStore.read(ResultPayload.self, name: "result.json"),
-           Date().timeIntervalSince1970 - result.createdAt < 300 {
-            insert(result.text, session: result.sessionID)
+    private func beginAttempt() {
+        guard !isRecording, pingTimer == nil else { return }
+        guard hasFullAccess else {
+            setState(Copy.limited, color: .systemRed, status: Copy.noAccessStatus, hint: Copy.accessHint)
             return
         }
-        guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            setState(Copy.hint, color: .systemGray, status: Copy.nothingStatus, hint: "先说一句，或让 App 写回结果")
+        guard SharedStore.isAvailable else {
+            promptOpenApp(reason: "当前签名没有 App Group。")
             return
         }
-        textDocumentProxy.insertText(text)
-        setState(Copy.done, color: .systemGreen, status: Copy.inserted(text.count) + "（剪贴板）", hint: "")
+        // 待命明确说明"支持后台开录"且心跳新鲜时直接开录，省掉一次往返。
+        if KeyboardChannel.standbySupportsBackgroundCapture, SharedStore.mainAppIsAlive {
+            startViaSharedChannel()
+            return
+        }
+        startPing()
     }
 
-    @objc private func returnTapped() {
-        textDocumentProxy.insertText("\n")
-    }
-
-    @objc private func deleteTapped() {
-        textDocumentProxy.deleteBackward()
-    }
-
-    @objc private func globeTapped() {
-        advanceToNextInputMode()
-    }
-
-    // MARK: - 与主 App 的共享通道
-
-    /// 发一次 ping 并短暂等待回执：比"心跳没过期"更可靠（心跳新鲜 ≠ 现在能起麦克风）。
-    private func pingMainApp() -> Bool {
+    /// 异步 ping：**绝不阻塞键盘主线程**。
+    /// 旧实现用 Thread.sleep 在主线程轮询 0.5 秒，键盘会被系统判为无响应并切回其它键盘。
+    private func startPing() {
         let request = DictationRequest(source: "ping")
+        pendingPingID = request.id
+        pingStartedAt = Date()
+        pingDeadline = Date().addingTimeInterval(1.0)
         SharedStore.write(request, name: "request.json")
         SharedStore.post(SharedStore.commandNotification)
-
-        let deadline = Date().addingTimeInterval(0.5)
-        while Date() < deadline {
-            if SharedStore.read(DictationReply.self, name: "reply-\(request.id).json") != nil { return true }
-            Thread.sleep(forTimeInterval: 0.05)
+        setState(Copy.listening, color: .systemOrange, status: "正在确认连接", hint: "")
+        pingTimer?.invalidate()
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            self?.pollPing()
         }
-        return false
     }
+
+    private func pollPing() {
+        guard let id = pendingPingID, let started = pingStartedAt, let deadline = pingDeadline else {
+            stopPing()
+            return
+        }
+        if SharedStore.read(DictationReply.self, name: "reply-\(id).json") != nil {
+            KeyboardChannel.recordPing(ok: true, milliseconds: Int(Date().timeIntervalSince(started) * 1000))
+            stopPing()
+            startViaSharedChannel()
+            return
+        }
+        guard Date() >= deadline else { return }
+        KeyboardChannel.recordPing(ok: false, milliseconds: Int(Date().timeIntervalSince(started) * 1000))
+        stopPing()
+        // 次级判据：心跳仍新鲜且待命支持后台开录时再赌一次，避免不必要的跳转
+        // （跳转会让系统重置输入法，回来后要手动切回 VoiceKey）。
+        if SharedStore.mainAppIsAlive, KeyboardChannel.standbySupportsBackgroundCapture {
+            startViaSharedChannel()
+        } else {
+            promptOpenApp(reason: "麦克风常开未就绪。")
+        }
+    }
+
+    private func stopPing() {
+        pingTimer?.invalidate()
+        pingTimer = nil
+        pendingPingID = nil
+        pingStartedAt = nil
+        pingDeadline = nil
+    }
+
 
     private func startViaSharedChannel() {
         let request = DictationRequest(source: "start")
@@ -435,8 +448,10 @@ final class KeyboardViewController: UIInputViewController {
             } else if !KeyboardChannel.isConfigured {
                 setState(Copy.ready, color: .systemGreen, status: Copy.idle, hint: "尚未配置 API Key，请在 App 内完成设置")
             } else {
+                let standbyLine = KeyboardChannel.standbyDescription
+                let pingLine = "上次检测：\(KeyboardChannel.lastPingDescription)"
                 setState(Copy.ready, color: .systemGreen, status: Copy.idle,
-                         hint: KeyboardChannel.standbyDescription.isEmpty ? Copy.idleHint : KeyboardChannel.standbyDescription)
+                         hint: standbyLine.isEmpty ? Copy.idleHint : "\(standbyLine) · \(pingLine)")
             }
         case .unavailable:
             isRecording = false

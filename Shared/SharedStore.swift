@@ -83,14 +83,9 @@ enum SharedStore {
     static func write<T: Encodable>(_ value: T, name: String) {
         guard let directory else { return }
         guard let data = try? JSONEncoder().encode(value) else { return }
-        let url = directory.appendingPathComponent(name)
-        let tmp = directory.appendingPathComponent(name + ".tmp")
-        do {
-            try data.write(to: tmp, options: .atomic)
-            _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } catch {
-            try? data.write(to: url, options: .atomic)
-        }
+        // 直接用 .atomic 写：内部已经在临时文件上写完再 rename，
+        // 不再用 replaceItemAt（目标不存在时行为不稳、且 try? 会静默丢文件）。
+        try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
     }
 
     static func read<T: Decodable>(_ type: T.Type, name: String) -> T? {
@@ -212,9 +207,31 @@ enum KeyboardChannel {
         SharedStore.defaults?.removeObject(forKey: "partialText")
     }
 
-    static func publishStandby(active: Bool, mode: String) {
+    static func publishStandby(active: Bool, mode: String, captureCapable: Bool = false) {
         SharedStore.defaults?.set(active, forKey: "standbyActive")
         SharedStore.defaults?.set(mode, forKey: "standbyMode")
+        SharedStore.defaults?.set(captureCapable, forKey: "standbyCaptureCapable")
+    }
+
+    /// 当前待命是否支持后台直接开录（只有"麦克风常开"为真）。
+    static var standbySupportsBackgroundCapture: Bool {
+        SharedStore.defaults?.bool(forKey: "standbyCaptureCapable") ?? false
+    }
+
+    /// 键盘侧记录上一次 ping 结果，便于诊断"为什么跳转了 App"。
+    static func recordPing(ok: Bool, milliseconds: Int) {
+        SharedStore.defaults?.set(ok ? "成功 \(milliseconds) ms" : "超时 \(milliseconds) ms", forKey: "lastPing")
+        SharedStore.defaults?.set(Date().timeIntervalSince1970, forKey: "lastPingAt")
+        SharedStore.defaults?.synchronize()
+    }
+
+    static var lastPingDescription: String {
+        guard let value = SharedStore.defaults?.string(forKey: "lastPing") else { return "尚未检测" }
+        let at = SharedStore.defaults?.double(forKey: "lastPingAt") ?? 0
+        guard at > 0 else { return value }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return "\(value) · \(formatter.string(from: Date(timeIntervalSince1970: at)))"
     }
 
     /// 键盘上显示的一行状态说明；未开启待命时返回空串，由键盘回落到默认提示。
