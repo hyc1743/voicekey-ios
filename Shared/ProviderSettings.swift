@@ -182,6 +182,9 @@ struct LLMSettings: Codable, Equatable {
 enum Defaults {
     static let dashscopeASREndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     static let qwenASRModel = "qwen-audio-3.1-asr-flash"
+    /// 麦克风常开的可选档位（秒）：不限 / 2 小时 / 30 分钟 / 5 分钟 / 10 秒（测试用）。
+    static let warmSecondsOptions: [Double] = [0, 7200, 1800, 300, 10]
+    static let warmSecondsDefault: Double = 1800
     static let realtimeEndpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
     static let realtimeModel = "qwen3-asr-flash-realtime"
     static let deepSeekEndpoint = "https://api.deepseek.com/chat/completions"

@@ -221,6 +221,32 @@ func start(sessionID:chunkSeconds:) throws { try arm()  /* 只是翻采集标志
 `startCapture()` 只翻 `isCapturing`；待命方式默认改成 **「麦克风常开」**，并把旧配置一次性迁移过来。
 静音/画中画模式保留，但 UI 里如实写明"只保进程、不保后台开麦"。
 
+### 跨 App 两种路径（v0.1.11）
+
+| 路径 | 条件 | 流程 | 体感 |
+|---|---|---|---|
+| **A 麦克风常开** | 待命方式 =「麦克风常开」且未到期 | 键盘 ping 通 → 直接开录，**完全不切 App** | 最佳 |
+| **B 跳转 + 自动返回** | 麦克风未常开（或已到期） | 键盘带 `?return=<宿主bundleID>` 打开 App → App 录音 → 录完用宿主 App 的 URL scheme **自动跳回** → 键盘重新出现时**自动插入** | 有一次切换，但全程无需手动操作 |
+
+路径 B 的依据来自 Typeless：它的 Info.plist 声明了 **50 个 App 的 URL scheme**
+（`weixin / lark / notion / slack / telegram / whatsapp / twitter / instagram …`），
+键盘也会把 `hostAppBundleId` 传给它——这正是"录完跳回上一个 App"的原料。本项目：
+- 键盘用 `extensionContext` 的 `hostBundleIdentifier`（用 `responds/perform` 安全读取，取不到则省略）；
+- App 侧维护 `ReturnAppCatalog`（bundle id → scheme，41 条），录完 0.8 秒后 `UIApplication.open` 跳回；
+- 查不到的 App 退回**系统自带的"返回 <上一个 App>"状态栏入口**，并且结果已经写进 App Group + 剪贴板，键盘一出现就自动插入。
+
+### 麦克风常开的时长档位
+
+`不限 / 2 小时 / 30 分钟 / 5 分钟 / 10 秒`（默认 **30 分钟**），从**最后一次口述结束**开始计时；
+到期自动关闭麦克风并在键盘上提示"需要打开 App"。10 秒档是留给你验证到期行为的。
+（Typeless 的同类设置是"音频关闭延迟"：Never / 12 小时 / 5 分钟 / 10 秒。）
+
+### 为什么静音/画中画"起不来"（v0.1.11 修复）
+
+「麦克风常开」会把 `.playAndRecord` 会话握在手里；我原先在切换待命方式时**没有先拆掉它**，
+于是静音输出/画中画去配置 `.playback` 会话时直接失败。现在切换任何待命方式前都会
+`tearDownStandby()`：停画中画 → 停静音 → 必要时 `recorder.disarm()`，再启动新模式。
+
 **关于"用户应该感知不到"**（这是关键体验指标）：
 
 | | 原版 Typeless | 本项目（0.1.7 起） |

@@ -26,8 +26,8 @@ targets:
       path: VoiceKey/Info.plist
       properties:
         CFBundleDisplayName: VoiceKey
-        CFBundleShortVersionString: "0.1.10"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "0.1.11"
+        CFBundleVersion: "12"
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "VoiceKey 需要使用麦克风把你说的话变成文字。"
@@ -36,6 +36,48 @@ targets:
           NSAllowsArbitraryLoads: true
         UIBackgroundModes:
           - audio
+        LSApplicationQueriesSchemes:
+          - barcelona
+          - claude
+          - discord
+          - evernote
+          - fb
+          - fb-messenger
+          - googlechrome
+          - googledocs
+          - googledrive
+          - googlemaps
+          - instagram
+          - jira
+          - lark
+          - linear
+          - mailto
+          - mobilenotes
+          - monday
+          - ms-outlook
+          - msteams
+          - nflx
+          - notion
+          - openai
+          - perplexity-app
+          - pinterest
+          - reddit
+          - slack
+          - snapchat
+          - snssdk1128
+          - snssdk1233
+          - spotify
+          - substack
+          - tg
+          - trello
+          - twitter
+          - uber
+          - ubereats
+          - walmart
+          - weixin
+          - whatsapp
+          - wxwork
+          - x-safari-https
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -65,8 +107,8 @@ targets:
       path: VoiceKeyKeyboard/Info.plist
       properties:
         CFBundleDisplayName: VoiceKey
-        CFBundleShortVersionString: "0.1.10"
-        CFBundleVersion: "11"
+        CFBundleShortVersionString: "0.1.11"
+        CFBundleVersion: "12"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController

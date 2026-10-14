@@ -9,10 +9,7 @@ struct VoiceKeyApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(engine)
-                .onOpenURL { url in
-                    guard url.scheme == SharedStore.scheme else { return }
-                    if url.host == "dictate" { engine.begin(source: "url") }
-                }
+                .onOpenURL { url in engine.handle(url: url) }
         }
         .onChange(of: scenePhase) { _, phase in
             engine.handleScenePhase(active: phase == .active)

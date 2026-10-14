@@ -110,10 +110,19 @@ struct SettingsView: View {
                     Picker("待命方式", selection: $engine.standbyMode) {
                         ForEach(StandbyMode.allCases) { mode in Text(mode.title).tag(mode) }
                     }
-                    if engine.standbyMode == .pictureInPicture {
+                    if engine.standbyMode == .microphoneWarm {
+                        Picker("常开时长", selection: $engine.warmSeconds) {
+                            ForEach(Defaults.warmSecondsOptions, id: \.self) { value in
+                                Text(Self.warmLabel(value)).tag(value)
+                            }
+                        }
+                    } else if engine.standbyMode == .pictureInPicture {
                         Toggle("隐藏画中画浮窗（私有 API）", isOn: $engine.pipHideWindow)
                     }
                     LabeledContent("当前状态", value: engine.standbyStatus)
+                    if engine.standbyMode == .microphoneWarm {
+                        LabeledContent("常开剩余", value: engine.warmRemainingText)
+                    }
                 } header: {
                     Text("跨 App 输入")
                 } footer: {
@@ -134,6 +143,18 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+        }
+    }
+}
+
+extension SettingsView {
+    static func warmLabel(_ seconds: Double) -> String {
+        switch seconds {
+        case 0: "不限"
+        case 7200: "2 小时"
+        case 1800: "30 分钟"
+        case 300: "5 分钟"
+        default: seconds >= 60 ? "\(Int(seconds / 60)) 分钟" : "\(Int(seconds)) 秒"
         }
     }
 }

@@ -246,7 +246,7 @@ final class KeyboardViewController: UIInputViewController {
         if pingMainApp() {
             startViaSharedChannel()
         } else {
-            promptOpenApp(reason: "App 不在后台运行。")
+            promptOpenApp(reason: "麦克风未常开，需要到 App 里录（录完会自动跳回这个 App）。")
         }
     }
 
@@ -437,15 +437,30 @@ final class KeyboardViewController: UIInputViewController {
     // MARK: - 打开宿主 App
 
     private func promptOpenApp(reason: String) {
-        setState("待启动", color: .systemOrange, status: "已请求打开 VoiceKey",
-                 hint: "\(reason) 回去录完后切回来，或点左下角插入结果。")
+        setState("待启动", color: .systemOrange, status: "正在打开 VoiceKey",
+                 hint: "\(reason) 录完会自动跳回，回来即自动插入。")
         openContainingApp()
+    }
+
+    /// 宿主 App 的 bundle id。
+    /// `hostBundleIdentifier` 不是公开 API，用 responds/perform 读；拿不到就返回 nil（不影响其它流程）。
+    private var hostBundleIdentifier: String? {
+        let selector = NSSelectorFromString("hostBundleIdentifier")
+        guard let context = extensionContext, context.responds(to: selector),
+              let value = context.perform(selector)?.takeUnretainedValue() as? String,
+              !value.isEmpty else { return nil }
+        return value
     }
 
     private func openContainingApp() {
         guard !didOpenContainingApp else { return }
         didOpenContainingApp = true
-        guard let url = URL(string: "\(SharedStore.scheme)://dictate") else { return }
+        // 带上宿主 App 的 bundle id：主 App 录完会用它自动跳回这个 App（Typeless 同款做法）。
+        var components = URLComponents(string: "\(SharedStore.scheme)://dictate")
+        if let host = hostBundleIdentifier {
+            components?.queryItems = [URLQueryItem(name: "return", value: host)]
+        }
+        guard let url = components?.url else { return }
         extensionContext?.open(url) { [weak self] success in
             guard !success else { return }
             DispatchQueue.main.async { self?.openViaResponderChain(url) }

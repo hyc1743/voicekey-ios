@@ -33,6 +33,14 @@ final class DictationEngine: ObservableObject {
     @Published private(set) var progress: String = ""
     @Published private(set) var diagnostics: String = ""
     @Published private(set) var standbyStatus: String = "未开启"
+    var warmRemainingText: String {
+        guard standbyMode == .microphoneWarm else { return "-" }
+        guard warmSeconds > 0 else { return "不限" }
+        guard recorder.isWarm else { return "未启用" }
+        let total = Int(warmRemaining)
+        return String(format: "%d 分 %02d 秒", total / 60, total % 60)
+    }
+
     /// 诊断用：warm 是否在跑、是否真的收到音频。
     var standbyProbe: String {
         recorder.isWarm
@@ -53,6 +61,15 @@ final class DictationEngine: ObservableObject {
             samplePiP.hideWindow = pipHideWindow
         }
     }
+    /// 麦克风常开的空闲时长（秒）：0 = 不限。每次口述完重新计时。
+    @Published var warmSeconds: Double {
+        didSet {
+            UserDefaults.standard.set(warmSeconds, forKey: "warmSeconds")
+            if standbyMode == .microphoneWarm { scheduleWarmExpiry() }
+        }
+    }
+    /// 距离麦克风常开到期还有多久（诊断/设置页展示）。
+    @Published private(set) var warmRemaining: TimeInterval = 0
     @Published var standbyMode: StandbyMode {
         didSet {
             UserDefaults.standard.set(standbyMode.rawValue, forKey: "standbyMode")
@@ -88,6 +105,9 @@ final class DictationEngine: ObservableObject {
     private var realtime: RealtimeASRClient?
     private var realtimeActive = false
     private var realtimeNote = ""
+    private var warmExpiryTask: Task<Void, Never>?
+    private var warmDeadline: Date?
+    private var returnBundleID: String?
 
     init() {
         let loaded = SettingsStore.load()
@@ -109,6 +129,7 @@ final class DictationEngine: ObservableObject {
         } else {
             standbyMode = StandbyMode(rawValue: storedStandby) ?? .microphoneWarm
         }
+        warmSeconds = UserDefaults.standard.object(forKey: "warmSeconds") as? Double ?? Defaults.warmSecondsDefault
         let savedHide = UserDefaults.standard.object(forKey: "pipHideWindow") as? Bool
         pipHideWindow = savedHide ?? true
         pipStandby.hideWindow = savedHide ?? true
@@ -684,6 +705,42 @@ final class DictationEngine: ObservableObject {
         KeyboardChannel.clearPartial()
         triggerSource = "app"
         currentRequest = nil
+        if standbyMode == .microphoneWarm { scheduleWarmExpiry() }
+        returnToPreviousAppIfNeeded()
+    }
+
+    /// 从键盘的 deep link 进来时，记下宿主 App，录完自动跳回去（Typeless 的 50 个 scheme 就是干这个）。
+    func handle(url: URL) {
+        guard url.scheme == SharedStore.scheme, url.host == "dictate" else { return }
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let value = components.queryItems?.first(where: { $0.name == "return" })?.value,
+           !value.isEmpty {
+            returnBundleID = value
+            diagnostics += "\n\n[跨 App] 返回目标：\(value)"
+        }
+        begin(source: "url")
+    }
+
+    private func returnToPreviousAppIfNeeded() {
+        guard let bundleID = returnBundleID else { return }
+        returnBundleID = nil
+        guard !ReturnAppCatalog.isOwnApp(bundleID) else { return }
+        guard let scheme = ReturnAppCatalog.scheme(forBundleIdentifier: bundleID) else {
+            diagnostics += "\n\n[跨 App] 未收录 \(bundleID) 的 URL scheme，改用系统状态栏的返回入口"
+            standbyStatus = "结果已就绪，请用状态栏「返回」或手动切回"
+            return
+        }
+        guard let target = URL(string: "\(scheme)://") else { return }
+        // 稍等一拍，让用户看到结果再跳回去。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            UIApplication.shared.open(target, options: [:]) { success in
+                if !success {
+                    self.diagnostics += "\n\n[跨 App] 打开 \(scheme):// 失败"
+                    self.standbyStatus = "无法自动跳回，请手动切回上一个 App"
+                }
+            }
+        }
     }
 
     private func termsList() -> [String] {
@@ -710,6 +767,37 @@ final class DictationEngine: ObservableObject {
         guard standbyMode == .pictureInPicture else { return }
         if samplePiP.isActive { samplePiP.resumeIdlePlayback() }
         if pipStandby.isActive { pipStandby.resumeIdlePlayback() }
+    }
+
+    /// 麦克风常开到期：到点自动 disarm，省电并如实提示键盘"需要跳转 App"。
+    private func scheduleWarmExpiry() {
+        warmExpiryTask?.cancel()
+        guard standbyMode == .microphoneWarm, warmSeconds > 0 else {
+            warmDeadline = nil
+            warmRemaining = 0
+            return
+        }
+        warmDeadline = Date().addingTimeInterval(warmSeconds)
+        warmRemaining = warmSeconds
+        warmExpiryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let deadline = self.warmDeadline else { return }
+                    let left = deadline.timeIntervalSinceNow
+                    self.warmRemaining = max(0, left)
+                    if left <= 0 {
+                        self.warmExpiryTask?.cancel()
+                        self.warmDeadline = nil
+                        self.recorder.disarm(deactivateSession: true)
+                        self.standbyStatus = "麦克风常开已到期，需要打开 App 才能再次跨 App 输入"
+                        KeyboardChannel.publishStandby(active: false, mode: "已到期")
+                        SharedStore.publish(phase: .unavailable, message: "麦克风常开已到期")
+                    }
+                }
+            }
+        }
     }
 
     /// micWarm 的待命状态：warm 且真的收到过音频才算"就绪"。
@@ -749,6 +837,17 @@ final class DictationEngine: ObservableObject {
         pipRoute = ""
     }
 
+    /// 切换待命方式前必须**彻底拆掉旧的**：
+    /// 麦克风常开会把 `.playAndRecord` 会话握在手里，若不先 disarm，
+    /// 静音输出/画中画去配置 `.playback` 会话时就会失败（此前"两种方式都无法启动"的原因）。
+    private func tearDownStandby(keepRecorderWarm: Bool, deactivateSession: Bool) {
+        stopPiPStandby()
+        silentStandby.stop()
+        if !keepRecorderWarm {
+            recorder.disarm(deactivateSession: deactivateSession)
+        }
+    }
+
     func handleScenePhase(active: Bool) {
         appIsActive = active
         if !active {
@@ -764,16 +863,15 @@ final class DictationEngine: ObservableObject {
         // 否则回到前台再切后台就又要重新激活——那正是 iOS 禁止的路径。
         switch standbyMode {
         case .off:
-            stopPiPStandby()
-            silentStandby.stop()
-            recorder.disarm()
+            tearDownStandby(keepRecorderWarm: false, deactivateSession: true)
+            warmExpiryTask?.cancel()
             standbyStatus = "未开启"
             KeyboardChannel.publishStandby(active: false, mode: "未开启")
         case .microphoneWarm:
-            stopPiPStandby()
-            silentStandby.stop()
+            tearDownStandby(keepRecorderWarm: true, deactivateSession: false)
             do {
                 try recorder.arm()
+                scheduleWarmExpiry()
                 standbyStatus = warmStandbyStatus
                 KeyboardChannel.publishStandby(active: true, mode: "麦克风常开")
                 publishPhase(.standby, message: "麦克风常开待命中")
@@ -784,7 +882,9 @@ final class DictationEngine: ObservableObject {
                 KeyboardChannel.publishStandby(active: false, mode: "失败")
             }
         case .silentAudio:
-            stopPiPStandby()
+            // 先放掉麦克风常开（会话、输入图），否则静音输出起不来。
+            tearDownStandby(keepRecorderWarm: false, deactivateSession: true)
+            warmExpiryTask?.cancel()
             do {
                 try silentStandby.start()
                 standbyStatus = "静音输出待命中（只保进程，不保后台开麦）"
@@ -794,7 +894,8 @@ final class DictationEngine: ObservableObject {
                 KeyboardChannel.publishStandby(active: false, mode: "失败")
             }
         case .pictureInPicture:
-            silentStandby.stop()
+            tearDownStandby(keepRecorderWarm: false, deactivateSession: true)
+            warmExpiryTask?.cancel()
             startPiPStandby()
         }
     }
