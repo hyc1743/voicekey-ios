@@ -357,6 +357,41 @@ deinit { CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyC
 
 ---
 
+## 八、参考材料与可复现资产
+
+### 1. Typeless 2.7.0 逆向分析（本地参考，不随仓库分发）
+
+本项目的关键取舍（保活链路、静音 VAD、键盘 IPC、ASR 协议族、插入策略）几乎每一条都能在这份分析里找到出处：
+
+```
+references/typeless/work/typeless-2.7.0/
+├── report/REPORT.md              # 详解：ASR 链路 / 文字整理 / 跨 App 输入，逐条标注文件与行号
+├── report/TYPELESS-OVERVIEW.md   # 工作流与技术特点总结 + 关键数字表 + 设计取舍
+├── evidence/E-001…E-028.md       # 28 条证据，每条带可复现命令与原文摘录
+├── js/main.decompiled.js         # 主 App Hermes 字节码反汇编（154 万行）
+├── js/kb_full.decompiled.js      # 键盘扩展反汇编
+└── ext/*/target_dump.tsv         # PiP 隐藏适配 / VAD 的指令级转储（含地址与常量）
+```
+
+- **不随仓库分发**：`.gitignore` 忽略了 `references/`，克隆仓库不会得到这份材料（仓库本身保持在 480 KB 量级）。
+- 生成方式：Hermes 字节码用 `hermes-dec` 反汇编；Mach-O 用 `strings` + `lief` + 自写的区间/锚点扫描器（`ext/find_xref.py`、`ext/target_dump.py`）。
+- **原始 IPA 未包含**（第三方二进制，170 MB），需要时单独放置到 `references/typeless/` 即可。
+- 分析结论的用法示例：README 里"保活链路""静音自动结束""跨 App 两种路径"三节都直接引用了其中的证据编号。
+
+### 2. 可复现的资产脚本（随仓库分发）
+
+仓库里没有任何"来源不明的二进制素材"，两个生成脚本都在 `tools/`：
+
+| 脚本 | 产物 | 说明 |
+|---|---|---|
+| `tools/make_icon.py` | `VoiceKey/Assets.xcassets/AppIcon.appiconset/AppIcon1024.png` | Pillow 绘制 + 4× 超采样；**输出与仓库中的 PNG 逐字节一致**（SHA256 已核对），`--preview` 可另存 180/60px 预览 |
+| `tools/make_standby_assets.sh` | `VoiceKey/Resources/Standby{,Hidden}.mp4` | ffmpeg 生成；隐藏素材是 2432×2 极扁条带（该规格与已验证实现一致），可见素材 192×108 |
+
+    python3 tools/make_icon.py --preview
+    bash tools/make_standby_assets.sh
+
+两处都不依赖网络素材，改参数即可换风格。
+
 ## 许可
 
 MIT License，见 [LICENSE](LICENSE)。
