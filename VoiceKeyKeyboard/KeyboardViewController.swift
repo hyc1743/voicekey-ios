@@ -361,6 +361,32 @@ final class KeyboardViewController: UIInputViewController {
         pingDeadline = nil
     }
 
+    @objc private func insertTapped() {
+        if let result = SharedStore.read(ResultPayload.self, name: "result.json"),
+           Date().timeIntervalSince1970 - result.createdAt < 300 {
+            insert(result.text, session: result.sessionID)
+            return
+        }
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            setState(Copy.hint, color: .systemGray, status: Copy.nothingStatus, hint: "先说一句，或让 App 写回结果")
+            return
+        }
+        textDocumentProxy.insertText(text)
+        setState(Copy.done, color: .systemGreen, status: Copy.inserted(text.count) + "（剪贴板）", hint: "")
+    }
+
+    @objc private func returnTapped() {
+        textDocumentProxy.insertText("\n")
+    }
+
+    @objc private func deleteTapped() {
+        textDocumentProxy.deleteBackward()
+    }
+
+    @objc private func globeTapped() {
+        advanceToNextInputMode()
+    }
+
 
     private func startViaSharedChannel() {
         let request = DictationRequest(source: "start")
