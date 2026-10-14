@@ -7,6 +7,9 @@ import Foundation
 /// 但这里只产出 WAV，不做 Opus：先保证链路可用，编解码留给后续优化。
 final class AudioRecorder {
     static let targetSampleRate: Double = 16_000
+    /// 允许缓存的最长音频（实时通道上限；批量通道由引擎按 300 秒提前停止）。
+    /// 540 秒 × 32 KB/s ≈ 17 MB。
+    static let maxSeconds: Double = 540
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -17,8 +20,8 @@ final class AudioRecorder {
     private(set) var isRunning = false
     private(set) var level: Float = 0
 
-    /// 音频线程回调，调用方需自行切回主线程。
-    var onLevel: ((Float) -> Void)?
+    /// 音频线程回调（RMS + 本块时长秒），调用方需自行切回主线程。
+    var onLevel: ((Float, Double) -> Void)?
 
     /// 每块转换后的 16 kHz PCM16（音频线程回调）。实时通道直接拿它上行，不再等攒成文件。
     var onPCM: ((Data) -> Void)?
@@ -142,8 +145,8 @@ final class AudioRecorder {
         let count = Int(output.frameLength)
         let bytes = Data(bytes: channel[0], count: count * MemoryLayout<Int16>.size)
         lock.lock()
-        // 与引擎的 300 秒硬上限保持一致，避免"UI 说 5 分钟、实际 3 分钟后就丢音频"。
-        if pcm.count < Int(Self.targetSampleRate) * 2 * 300 { pcm.append(bytes) }
+        // 与引擎的最长上限（实时通道 540 秒）保持一致，避免"UI 说 9 分钟、实际更早就丢音频"。
+        if pcm.count < Int(Self.targetSampleRate) * 2 * Int(Self.maxSeconds) { pcm.append(bytes) }
         lock.unlock()
         onPCM?(bytes)
 
@@ -151,7 +154,7 @@ final class AudioRecorder {
         for index in 0..<count { let value = Double(channel[0][index]) / 32768.0; sum += value * value }
         let rms = Float((sum / Double(max(count, 1))).squareRoot())
         level = rms
-        onLevel?(rms)
+        onLevel?(rms, Double(count) / Self.targetSampleRate)
     }
 
     /// 生成 44 字节头 + PCM16 的 WAV。

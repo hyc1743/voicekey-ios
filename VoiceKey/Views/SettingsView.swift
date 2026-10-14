@@ -14,6 +14,12 @@ struct SettingsView: View {
                     SecureField("API Key（存 Keychain）", text: $engine.asr.apiKey)
                     TextField("语言（可留空自动）", text: $engine.asr.language)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Picker("静音自动结束", selection: $engine.asr.silenceSeconds) {
+                        Text("关闭").tag(0.0)
+                        Text("3 秒").tag(3.0)
+                        Text("5 秒").tag(5.0)
+                        Text("10 秒").tag(10.0)
+                    }
 
                     if engine.asr.transport == .realtime {
                         TextField("实时地址", text: $engine.asr.realtimeEndpoint)

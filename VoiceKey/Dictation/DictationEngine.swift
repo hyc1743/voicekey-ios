@@ -34,7 +34,6 @@ final class DictationEngine: ObservableObject {
     @Published private(set) var diagnostics: String = ""
     @Published private(set) var standbyStatus: String = "未开启"
     @Published private(set) var triggerSource: String = "app"
-    @Published var autoStopOnSilence: Bool = true
 
     @Published var asr: ASRSettings { didSet { persist() } }
     @Published var llm: LLMSettings { didSet { persist() } }
@@ -74,7 +73,8 @@ final class DictationEngine: ObservableObject {
     private var sentBytes = 0
     private var partialRaw = ""
     private var partialInFlight = false
-    private var quietSince: Date?
+    private var vad = VoiceActivityDetector(silenceSeconds: 0)
+    private var didWarnAboutLimit = false
     private var cancelRequested = false
     private var appIsActive = true
     private var captureToken = UUID()
@@ -93,8 +93,8 @@ final class DictationEngine: ObservableObject {
         pipHideWindow = savedHide ?? true
         pipStandby.hideWindow = savedHide ?? true
         samplePiP.hideWindow = savedHide ?? true
-        recorder.onLevel = { [weak self] value in
-            Task { @MainActor in self?.handleLevel(value) }
+        recorder.onLevel = { [weak self] rms, duration in
+            Task { @MainActor in self?.handleLevel(rms, duration: duration) }
         }
         samplePiP.onStatusChange = { [weak self] status in
             Task { @MainActor in
@@ -160,7 +160,6 @@ final class DictationEngine: ObservableObject {
         liveText = ""
         partialRaw = ""
         progress = ""
-        quietSince = nil
         KeyboardChannel.clearPartial()
         if let request = currentRequest {
             reply(request, kind: .rejected, text: nil, message: "用户取消")
@@ -266,7 +265,8 @@ final class DictationEngine: ObservableObject {
         partialRaw = ""
         liveText = ""
         progress = ""
-        quietSince = nil
+        vad = VoiceActivityDetector(silenceSeconds: asr.silenceSeconds)
+        didWarnAboutLimit = false
         realtimeNote = ""
         captureToken = UUID()
         KeyboardChannel.clearPartial()
@@ -344,23 +344,21 @@ final class DictationEngine: ObservableObject {
         stopTimers()
     }
 
-    /// 静音判定按**真实时间**累加。旧实现按回调次数每次加 0.05 秒，
-    /// 而电平回调频率远高于 20 Hz，会把 2.2 秒静音误判成零点几秒就自动结束。
-    private func handleLevel(_ value: Float) {
-        level = value
-        guard case .recording = stage, autoStopOnSilence else { return }
-        guard seconds > 1.2 else { return }
-        if value > 0.03 {
-            quietSince = nil
-            return
+    /// 静音自动结束：交给自适应 dB VAD（见 VoiceActivityDetector）。
+    /// 旧实现用"回调次数 × 0.05 秒"累加，且阈值是无出处的原始 RMS，早已废弃。
+    private func handleLevel(_ rms: Float, duration: Double) {
+        level = rms
+        guard case .recording = stage, asr.silenceSeconds > 0 else { return }
+        guard seconds > 1.0 else { return }           // 头 1 秒不判定，避免一开口就被结束
+        if vad.observe(rms: Double(rms), duration: duration) {
+            diagnostics += String(format: "\n\n[静音自动结束] 静音超过 %.0f 秒", asr.silenceSeconds)
+            stopAndProcess()
         }
-        guard value < 0.01 else { return }
-        let now = Date()
-        if let since = quietSince {
-            if now.timeIntervalSince(since) > 2.2 { stopAndProcess() }
-        } else {
-            quietSince = now
-        }
+    }
+
+    /// 录音上限：批量通道 300 秒（收尾要按段跑，太久体验差），实时通道 540 秒（Typeless 同值）。
+    private var recordingLimitSeconds: Double {
+        asr.transport == .realtime ? 540 : 300
     }
 
     private func startTicker() {
@@ -369,7 +367,18 @@ final class DictationEngine: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.seconds += 0.05
-                if self.seconds >= 300 { self.stopAndProcess() }     // 硬上限 5 分钟（与录音缓冲一致）
+                let limit = self.recordingLimitSeconds
+                if !self.didWarnAboutLimit, self.seconds >= limit - 60 {
+                    self.didWarnAboutLimit = true
+                    let hint = self.asr.transport == .batch
+                        ? "还剩不到 1 分钟（批量通道上限 \(Int(limit / 60)) 分钟，长录音可切实时通道）"
+                        : "还剩不到 1 分钟（上限 \(Int(limit / 60)) 分钟）"
+                    SharedStore.publish(phase: .recording, message: hint)
+                }
+                if self.seconds >= limit {
+                    self.diagnostics += "\n\n[到达录音上限] \(Int(limit)) 秒，已自动停止"
+                    self.stopAndProcess()
+                }
             }
         }
     }
@@ -439,7 +448,6 @@ final class DictationEngine: ObservableObject {
         let duration = Double(pcm.count / 2) / AudioRecorder.targetSampleRate
         stopTimers()
         level = 0
-        quietSince = nil
         stage = .transcribing
         publishPhase(.processing, message: "识别中")
 
@@ -501,8 +509,11 @@ final class DictationEngine: ObservableObject {
         if llmSettings.enabled {
             let client = LLMClient()
             do {
-                final = try await client.cleanup(raw: raw, settings: llmSettings, terms: terms) { [weak self] partial in
-                    Task { @MainActor in self?.liveText = partial }
+                // Typeless 的 REFINING_TIMEOUT = 20 秒：超时就用原始识别结果上屏，不让用户干等。
+                final = try await Self.withTimeout(seconds: 20) {
+                    try await client.cleanup(raw: raw, settings: llmSettings, terms: terms) { [weak self] partial in
+                        Task { @MainActor in self?.liveText = partial }
+                    }
                 }
                 exchanges.append("--- 整理 ---\n" + client.exchange)
             } catch {
@@ -512,6 +523,23 @@ final class DictationEngine: ObservableObject {
         diagnostics = exchanges.joined(separator: "\n\n")
         finish(text: final, raw: raw, seconds: duration, source: source)
         resumeStandbyPlaybackIfNeeded()
+    }
+
+    /// 给一个 async 操作加硬超时；超时抛错，由调用方决定回退策略。
+    nonisolated static func withTimeout<T: Sendable>(seconds: Double,
+                                                    _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw ServiceError(message: "操作超时（\(Int(seconds)) 秒）")
+            }
+            guard let result = try await group.next() else {
+                throw ServiceError(message: "操作未返回结果")
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     /// 单段识别：编码 → 调 ASR → 返回文本与诊断（非隔离，便于并发跑多段）。

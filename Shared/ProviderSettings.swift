@@ -124,6 +124,9 @@ struct ASRSettings: Codable, Equatable {
     var chunkSeconds: Double = 25
     /// 边录边识别间隔（秒），0 = 关闭。开启后边说边出字。
     var partialSeconds: Double = 6
+    /// 静音自动结束：0 = 关闭，可选 3 / 5 / 10 秒。
+    /// 默认 5 秒（与 Typeless 的 silenceDuration 同值）；判定算法见 VoiceActivityDetector。
+    var silenceSeconds: Double = 5
     /// 是否附加官方 CLI 里的增强参数（language_hints / vocabulary）。
     /// 默认关闭：已验证实现从不发送这些字段，实测报错时保持关闭即可。
     var useCLIExtras: Bool = false

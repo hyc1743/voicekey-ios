@@ -134,7 +134,12 @@ struct DictationView: View {
                 }
 
                 VStack(spacing: 6) {
-                    Toggle("静音 2 秒自动结束", isOn: $engine.autoStopOnSilence)
+                    Picker("静音自动结束", selection: $engine.asr.silenceSeconds) {
+                        Text("关闭").tag(0.0)
+                        Text("3 秒").tag(3.0)
+                        Text("5 秒").tag(5.0)
+                        Text("10 秒").tag(10.0)
+                    }
                     HStack {
                         Text("待命").foregroundStyle(.secondary)
                         Spacer()

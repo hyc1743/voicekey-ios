@@ -26,8 +26,8 @@ targets:
       path: VoiceKey/Info.plist
       properties:
         CFBundleDisplayName: VoiceKey
-        CFBundleShortVersionString: "0.1.8"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "0.1.9"
+        CFBundleVersion: "10"
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "VoiceKey 需要使用麦克风把你说的话变成文字。"
@@ -65,8 +65,8 @@ targets:
       path: VoiceKeyKeyboard/Info.plist
       properties:
         CFBundleDisplayName: VoiceKey
-        CFBundleShortVersionString: "0.1.8"
-        CFBundleVersion: "9"
+        CFBundleShortVersionString: "0.1.9"
+        CFBundleVersion: "10"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.keyboard-service
           NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).KeyboardViewController
