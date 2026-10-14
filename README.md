@@ -170,15 +170,15 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 **关于"用户应该感知不到"**（这是关键体验指标）：
 
-| | 原版 Typeless | 本项目（0.1.6 起） |
+| | 原版 Typeless | 本项目（0.1.7 起） |
 |---|---|---|
-| PiP 内容源 | `AVPictureInPictureControllerContentSource` + `AVSampleBufferDisplayLayer`（`initWithContentSource:` / `initWithSampleBufferDisplayLayer:playbackDelegate:` 均在其二进制符号表中） | `AVPlayerLayer` + 循环视频 |
-| 隐藏手段 | 由代理内容类型 / 控件样式 override 决定"窗口里画什么"，理论上可以什么都不画 | 视频素材退化成**极扁条带**：隐藏模式素材 2432×2（同已验证实现），窗口因此收缩成一条细线；App 内锚点 96×54 叠加 `resizeAspect` 后同样只剩发丝宽 |
-| 用户观感 | 无可见窗口 | **预期是一条几乎不可见的细线**（待真机确认） |
+| PiP 内容源 | `AVPictureInPictureControllerContentSource` + `AVSampleBufferDisplayLayer`（`initWithContentSource:` / `initWithSampleBufferDisplayLayer:playbackDelegate:` 均在其二进制符号表中） | **同样是 sample-buffer 内容源**（主路线）；另有 `AVPlayerLayer` + 极扁素材作为兜底路线 |
+| 帧内容 | 由代理内容类型 / 控件样式 override 决定画什么 | 喂 **2432×2 全透明 BGRA 帧**（1 Hz）；配合 `PiPVisibilityAdapter` 的 content type=6 / proxy style=5，系统可完全不绘制内容面 |
+| 用户观感 | 无可见窗口 | 预期同"无可见窗口"；即使系统仍绘制，也只是 2px 高的细线或全透明 |
+| 失败降级 | — | sample-buffer 起不来 → 自动回落 `playerLayer` + 2432×2 隐藏素材；再失败才提示不可用 |
 
-> 两条路线的目标相同：让系统保留 PiP 会话（= 后台运行许可），但屏幕上不出现有存在感的窗口。
-> 本项目走的是已验证实现在用的"极扁素材"路线；Typeless 走的是 sample-buffer 内容源路线。
-> 若真机上细线仍可感知，可再切到 sample-buffer 路线（需要实现 `AVPictureInPictureSampleBufferPlaybackDelegate`）。
+> 两条路线共用同一套 AVKit 私有覆盖（`PiPVisibilityAdapter`）。sample-buffer 路线是 Typeless 的真实做法：
+> 内容由我们喂的帧决定，因此"不画东西"是可能的；视频路线只能靠极扁素材把窗口压成一条线。
 
 隐藏浮窗的原理（与 Typeless 2.7.0 取证一致）：对 `AVPictureInPicturePlatformAdapter` 做**作用域限定**的私有方法替换——
 `pictureInPictureProxyContentType:` 返回 6、`_proxyControlsStyle` 返回 5、并挂钩两个刷新入口

@@ -45,6 +45,7 @@ final class DictationEngine: ObservableObject {
         didSet {
             UserDefaults.standard.set(pipHideWindow, forKey: "pipHideWindow")
             pipStandby.hideWindow = pipHideWindow
+            samplePiP.hideWindow = pipHideWindow
         }
     }
     @Published var standbyMode: StandbyMode {
@@ -58,7 +59,10 @@ final class DictationEngine: ObservableObject {
 
     private let recorder = AudioRecorder()
     private let silentStandby = StandbyKeeper()
+    private let samplePiP = StandbySampleBufferPiP()
     private let pipStandby = StandbyVideoPiP()
+    /// 当前生效的画中画路线：sample-buffer / video / 空
+    private var pipRoute = ""
     private var ticker: Timer?
     private var partialTimer: Timer?
     private var heartbeat: Timer?
@@ -85,8 +89,17 @@ final class DictationEngine: ObservableObject {
         let savedHide = UserDefaults.standard.object(forKey: "pipHideWindow") as? Bool
         pipHideWindow = savedHide ?? true
         pipStandby.hideWindow = savedHide ?? true
+        samplePiP.hideWindow = savedHide ?? true
         recorder.onLevel = { [weak self] value in
             Task { @MainActor in self?.handleLevel(value) }
+        }
+        samplePiP.onStatusChange = { [weak self] status in
+            Task { @MainActor in
+                guard let self, self.pipRoute == "sample-buffer" else { return }
+                self.standbyStatus = status.message
+                KeyboardChannel.publishStandby(active: status.active,
+                                               mode: status.hidden ? "画中画" : "画中画(可见)")
+            }
         }
         pipStandby.onStatusChange = { [weak self] status in
             Task { @MainActor in
@@ -528,14 +541,46 @@ final class DictationEngine: ObservableObject {
 
     // MARK: - 待命
 
-    /// 待命是否正持有音频会话（决定录音结束时能不能 deactivate）。
+    /// 待命是否正持有音频会话（决定录音结束时能不能 deactivate）。两条路线都算。
     private var standbyOwnsSession: Bool {
-        standbyMode == .pictureInPicture && pipStandby.isActive
+        standbyMode == .pictureInPicture && (samplePiP.isActive || pipStandby.isActive)
     }
 
     private func resumeStandbyPlaybackIfNeeded() {
         guard standbyOwnsSession else { return }
-        pipStandby.resumeIdlePlayback()
+        if samplePiP.isActive { samplePiP.resumeIdlePlayback() }
+        if pipStandby.isActive { pipStandby.resumeIdlePlayback() }
+    }
+
+    /// 优先 sample-buffer 路线（Typeless 同款，窗口可以不绘制内容）；不可用则回落到视频路线。
+    private func startPiPStandby() {
+        samplePiP.stop()
+        pipStandby.stop()
+        pipRoute = ""
+        if samplePiP.isSupported, (try? samplePiP.start()) != nil {
+            pipRoute = "sample-buffer"
+            standbyStatus = samplePiP.status.message
+            KeyboardChannel.publishStandby(active: samplePiP.status.active,
+                                           mode: samplePiP.status.hidden ? "画中画" : "画中画(可见)")
+            return
+        }
+        do {
+            try pipStandby.start()
+            pipRoute = "video"
+            standbyStatus = pipStandby.status.message
+            KeyboardChannel.publishStandby(active: pipStandby.status.active,
+                                           mode: pipStandby.status.hidden ? "画中画" : "画中画(可见)")
+        } catch {
+            pipRoute = ""
+            standbyStatus = "画中画待命启动失败：\(error.localizedDescription)"
+            KeyboardChannel.publishStandby(active: false, mode: "失败")
+        }
+    }
+
+    private func stopPiPStandby() {
+        samplePiP.stop()
+        pipStandby.stop()
+        pipRoute = ""
     }
 
     func handleScenePhase(active: Bool) {
@@ -551,7 +596,7 @@ final class DictationEngine: ObservableObject {
     private func updateStandby(force: Bool) {
         guard force || !appIsActive else {
             // 回到前台：停止一切待命，避免占着音频会话。
-            pipStandby.stop()
+            stopPiPStandby()
             silentStandby.stop()
             KeyboardChannel.publishStandby(active: false, mode: "未开启")
             standbyStatus = "未开启"
@@ -561,12 +606,12 @@ final class DictationEngine: ObservableObject {
 
         switch standbyMode {
         case .off:
-            pipStandby.stop()
+            stopPiPStandby()
             silentStandby.stop()
             standbyStatus = "未开启"
             KeyboardChannel.publishStandby(active: false, mode: "未开启")
         case .silentAudio:
-            pipStandby.stop()
+            stopPiPStandby()
             do {
                 try silentStandby.start()
                 standbyStatus = "静音输出待命中（系统仍可能挂起）"
@@ -577,15 +622,7 @@ final class DictationEngine: ObservableObject {
             }
         case .pictureInPicture:
             silentStandby.stop()
-            do {
-                try pipStandby.start()
-                standbyStatus = pipStandby.status.message
-                KeyboardChannel.publishStandby(active: pipStandby.status.active,
-                                               mode: pipStandby.status.hidden ? "画中画" : "画中画(可见)")
-            } catch {
-                standbyStatus = "画中画待命启动失败：\(error.localizedDescription)"
-                KeyboardChannel.publishStandby(active: false, mode: "失败")
-            }
+            startPiPStandby()
         }
     }
 
