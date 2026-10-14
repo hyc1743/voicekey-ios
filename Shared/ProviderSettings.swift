@@ -88,25 +88,31 @@ enum UploadFormat: String, Codable, CaseIterable, Identifiable {
 
 /// 后台待命方式。
 enum StandbyMode: String, Codable, CaseIterable, Identifiable {
-    case off
-    case silentAudio
+    case microphoneWarm
     case pictureInPicture
+    case silentAudio
+    case off
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .off: "关闭"
+        case .microphoneWarm: "麦克风常开（推荐）"
+        case .pictureInPicture: "画中画（实验）"
         case .silentAudio: "静音输出（无私有 API）"
-        case .pictureInPicture: "画中画（实验，含私有 API）"
+        case .off: "关闭"
         }
     }
     var detail: String {
         switch self {
-        case .off: "主 App 进入后台后可能被系统挂起，此时键盘会提示打开 App。"
-        case .silentAudio: "播放静音尽量保持存活；iOS 仍可能挂起，但不触碰任何私有接口。"
-        case .pictureInPicture: "用循环视频占用系统画中画会话换取后台运行时间（Typeless 同款思路）；依赖 AVKit 私有方法，系统升级可能失效，上架审核前请改用其它方式。"
+        case .microphoneWarm: "待命时保持输入会话与麦克风开启，键盘在别的 App 里点麦克风可**直接开录**——这是 iOS 唯一允许的后台开录方式。代价是待命期间一直占用麦克风（耗电、会显示录音指示），系统也可能提前中断。"
+        case .pictureInPicture: "用循环视频占用系统画中画会话换取后台运行时间（Typeless 同款思路）。注意：它只保住进程，**不能保证后台能开输入**；若要跨 App 直接开录，请用「麦克风常开」。"
+        case .silentAudio: "播放静音尽量保持存活；同样只保进程、不保后台开麦。"
+        case .off: "主 App 进入后台后可能被挂起；键盘点麦克风会提示打开 App。"
         }
     }
+
+    /// 跨 App 直接开录只在这一档下才可靠（iOS 限制：后台不能新激活录音会话）。
+    var supportsBackgroundCapture: Bool { self == .microphoneWarm }
 }
 
 struct ASRSettings: Codable, Equatable {

@@ -1,30 +1,41 @@
 import AVFoundation
 import Foundation
 
-/// 16 kHz / 单声道 / 16-bit PCM 采集。
+/// 16 kHz / 单声道 / 16-bit PCM 采集，支持"麦克风常开（warm）"待命。
 ///
-/// 与 Typeless 的做法一致（16 kHz 单声道是语音识别的最佳性价比区间），
-/// 但这里只产出 WAV，不做 Opus：先保证链路可用，编解码留给后续优化。
+/// 为什么必须支持 warm：iOS 不允许 App 在**后台**把音频会话切到 `.playAndRecord` 并激活，
+/// 后台尝试会得到 CoreAudio `'what'`（2003329396）。已验证实现（Voxt-ios）的做法是
+/// 在**前台**就 `arm()`：配好 `.playAndRecord` + `setActive(true)` + 装好 input tap，
+/// 让 `engine.isRunning == true`；键盘触发时只把 `isCapturing` 翻成 true，不再动会话。
+/// 本项目此前只有静音输出/画中画两种待命，它们保住了进程却保不住"能开输入"，因此跨 App 必然失败。
 final class AudioRecorder {
     static let targetSampleRate: Double = 16_000
     /// 允许缓存的最长音频（实时通道上限；批量通道由引擎按 300 秒提前停止）。
     /// 540 秒 × 32 KB/s ≈ 17 MB。
     static let maxSeconds: Double = 540
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var targetFormat: AVAudioFormat?
+    private var tapInstalled = false
+
     private var pcm = Data()
+    private var capturing = false
+    private var lastAudioAt = Date.distantPast
     private let lock = NSLock()
 
-    private(set) var isRunning = false
     private(set) var level: Float = 0
 
     /// 音频线程回调（RMS + 本块时长秒），调用方需自行切回主线程。
     var onLevel: ((Float, Double) -> Void)?
-
     /// 每块转换后的 16 kHz PCM16（音频线程回调）。实时通道直接拿它上行，不再等攒成文件。
     var onPCM: ((Data) -> Void)?
+
+    /// warm = 会话已激活且 engine 在跑（不代表正在采集）。
+    var isWarm: Bool { engine.isRunning }
+    /// 最近 2.5 秒内真的收到过音频：用来证明"warm 是真的在跑"，而不是僵死状态。
+    var hasRecentAudio: Bool { Date().timeIntervalSince(lastAudioAt) < 2.5 }
+    var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return capturing }
 
     var duration: Double {
         lock.lock(); defer { lock.unlock() }
@@ -40,14 +51,11 @@ final class AudioRecorder {
         }
     }
 
-    func start() throws {
-        guard !isRunning else { return }
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                         sampleRate: Self.targetSampleRate,
-                                         channels: 1,
-                                         interleaved: true) else {
-            throw RecorderError.formatUnavailable
-        }
+    // MARK: - Warm（待命）
+
+    /// 在前台把录音会话与 engine 准备好。重复调用是幂等的。
+    func arm() throws {
+        guard !engine.isRunning else { return }
         let session = AVAudioSession.sharedInstance()
         // 与已验证实现一致：mode 用 .default（.measurement 会改输入处理链，且与画中画待命更易冲突）。
         // 蓝牙选项用 .allowBluetooth：新版 SDK 里它的替代名是 .allowBluetoothHFP，
@@ -56,28 +64,72 @@ final class AudioRecorder {
                                 options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
         try session.setActive(true)
 
+        // 类别/路由变化后重建输入图：旧的 input node 可能还带着上一次的硬件格式。
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        engine = AVAudioEngine()
+
         let input = engine.inputNode
         let hardware = input.outputFormat(forBus: 0)
         guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
             throw RecorderError.inputUnavailable
         }
-        guard let converter = AVAudioConverter(from: hardware, to: format) else {
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                         sampleRate: Self.targetSampleRate,
+                                         channels: 1,
+                                         interleaved: true),
+              let converter = AVAudioConverter(from: hardware, to: format) else {
             throw RecorderError.formatUnavailable
         }
-
-        lock.lock()
-        pcm.removeAll(keepingCapacity: true)
-        lock.unlock()
         self.converter = converter
         targetFormat = format
+        lastAudioAt = .distantPast
 
-        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: hardware) { [weak self] buffer, _ in
             self?.consume(buffer)
         }
+        tapInstalled = true
         engine.prepare()
         try engine.start()
-        isRunning = true
+    }
+
+    func disarm(deactivateSession: Bool = true) {
+        stopEngine()
+        converter = nil
+        if deactivateSession {
+            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+    }
+
+    // MARK: - 采集
+
+    /// 开始采集。必要时自动 arm（前台调用有效；后台调用会拿到 CoreAudio 错误，由上层转成友好提示）。
+    func startCapture() throws {
+        try arm()
+        lock.lock()
+        pcm.removeAll(keepingCapacity: true)
+        capturing = true
+        lock.unlock()
+    }
+
+    /// 停止采集并返回原始 PCM16；无有效音频时返回 nil。
+    /// - Parameter keepWarm: true 时保留 engine 与会话（麦克风常开待命），下次可后台直接开录。
+    func stopCapture(keepWarm: Bool, deactivateSession: Bool? = nil) -> Data? {
+        lock.lock()
+        capturing = false
+        let samples = pcm
+        pcm.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        if !keepWarm { stopEngine() }
+        let shouldDeactivate = deactivateSession ?? !keepWarm
+        if shouldDeactivate {
+            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+        guard samples.count > Int(Self.targetSampleRate / 2) else { return nil }   // < 0.25 s 视为误触
+        return samples
     }
 
     /// 读取从 `offset` 字节开始的 PCM 增量，用于边录边识别的分段提交。
@@ -88,38 +140,15 @@ final class AudioRecorder {
         return (pcm.subdata(in: offset..<total), total)
     }
 
-    /// 停止并返回原始 PCM16（16 kHz 单声道）；无有效音频时返回 nil。
-    /// - Parameter deactivateSession: 画中画/静音待命期间必须传 false，
-    ///   否则 `setActive(false)` 会连待命音频一起拆掉（Voxt-ios 的 finishCapture 同理）。
-    func stop(deactivateSession: Bool = true) -> Data? {
-        guard isRunning else { return nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        isRunning = false
-        if deactivateSession {
-            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    private func stopEngine() {
+        if engine.isRunning { engine.stop() }
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
         }
-        converter = nil
-
-        lock.lock()
-        let samples = pcm
-        pcm.removeAll(keepingCapacity: false)
-        lock.unlock()
-        guard samples.count > Int(Self.targetSampleRate / 2) else { return nil }   // < 0.25 s 视为误触
-        return samples
     }
 
-    func cancel(deactivateSession: Bool = true) {
-        guard isRunning else { return }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        isRunning = false
-        if deactivateSession {
-            _ = try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
-        converter = nil
-        lock.lock(); pcm.removeAll(); lock.unlock()
-    }
+    // MARK: - 音频处理
 
     private func consume(_ buffer: AVAudioPCMBuffer) {
         guard let converter, let targetFormat else { return }
@@ -144,17 +173,25 @@ final class AudioRecorder {
 
         let count = Int(output.frameLength)
         let bytes = Data(bytes: channel[0], count: count * MemoryLayout<Int16>.size)
+        let duration = Double(count) / Self.targetSampleRate
+        lastAudioAt = Date()
+
         lock.lock()
-        // 与引擎的最长上限（实时通道 540 秒）保持一致，避免"UI 说 9 分钟、实际更早就丢音频"。
-        if pcm.count < Int(Self.targetSampleRate) * 2 * Int(Self.maxSeconds) { pcm.append(bytes) }
+        let isCapturing = capturing
+        // 与最长通道上限（540 秒）保持一致，避免"UI 说 9 分钟、实际更早就丢音频"。
+        if isCapturing, pcm.count < Int(Self.targetSampleRate) * 2 * Int(Self.maxSeconds) {
+            pcm.append(bytes)
+        }
         lock.unlock()
-        onPCM?(bytes)
+
+        // 只有采集期间才把音频送给上层（warm 待命时静静丢弃，不占用带宽）。
+        if isCapturing { onPCM?(bytes) }
 
         var sum: Double = 0
         for index in 0..<count { let value = Double(channel[0][index]) / 32768.0; sum += value * value }
         let rms = Float((sum / Double(max(count, 1))).squareRoot())
         level = rms
-        onLevel?(rms, Double(count) / Self.targetSampleRate)
+        onLevel?(rms, duration)
     }
 
     /// 生成 44 字节头 + PCM16 的 WAV。

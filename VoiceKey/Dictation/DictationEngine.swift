@@ -33,6 +33,12 @@ final class DictationEngine: ObservableObject {
     @Published private(set) var progress: String = ""
     @Published private(set) var diagnostics: String = ""
     @Published private(set) var standbyStatus: String = "未开启"
+    /// 诊断用：warm 是否在跑、是否真的收到音频。
+    var standbyProbe: String {
+        recorder.isWarm
+            ? (recorder.hasRecentAudio ? "已启用，正在收音频" : "已启用，但还没收到音频")
+            : "未启用"
+    }
     @Published private(set) var triggerSource: String = "app"
 
     @Published var asr: ASRSettings { didSet { persist() } }
@@ -88,7 +94,21 @@ final class DictationEngine: ObservableObject {
         asr = loaded.asr
         llm = loaded.llm
         personalTerms = UserDefaults.standard.string(forKey: "personalTerms") ?? ""
-        standbyMode = StandbyMode(rawValue: UserDefaults.standard.string(forKey: "standbyMode") ?? "") ?? .off
+        // 待命默认「麦克风常开」：iOS 只允许它后台开录；静音/画中画只能保进程。
+        let storedStandby = UserDefaults.standard.string(forKey: "standbyMode") ?? ""
+        var standbyNotes: [String] = []
+        if !UserDefaults.standard.bool(forKey: "standbyMigrationWarm") {
+            UserDefaults.standard.set(true, forKey: "standbyMigrationWarm")
+            if storedStandby == "silentAudio" || storedStandby == "pictureInPicture" || storedStandby.isEmpty {
+                standbyNotes.append("待命方式已改为「麦克风常开」：iOS 只允许该模式下后台开录，静音/画中画只能保进程")
+                UserDefaults.standard.set(StandbyMode.microphoneWarm.rawValue, forKey: "standbyMode")
+                standbyMode = .microphoneWarm
+            } else {
+                standbyMode = StandbyMode(rawValue: storedStandby) ?? .microphoneWarm
+            }
+        } else {
+            standbyMode = StandbyMode(rawValue: storedStandby) ?? .microphoneWarm
+        }
         let savedHide = UserDefaults.standard.object(forKey: "pipHideWindow") as? Bool
         pipHideWindow = savedHide ?? true
         pipStandby.hideWindow = savedHide ?? true
@@ -113,15 +133,22 @@ final class DictationEngine: ObservableObject {
         history.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        if !SettingsStore.migrationNotes.isEmpty {
-            diagnostics = "设置已按官方变更自动修正：\n- " + SettingsStore.migrationNotes.joined(separator: "\n- ")
+        let notes = SettingsStore.migrationNotes + standbyNotes
+        if !notes.isEmpty {
+            diagnostics = "设置已自动修正：\n- " + notes.joined(separator: "\n- ")
         }
         observeKeyboard()
         observeAudioSession()
         startHeartbeat()
         SettingsStore.save(asr: asr, llm: llm)
         publishPhase(.standby, message: "主 App 已就绪")
-        KeyboardChannel.publishStandby(active: false, mode: "未开启")
+        // 启动即按所选模式准备待命：micWarm 需要在前台把会话与麦克风打开，
+        // 否则用户切到别的 App 之后就没有机会再激活录音会话了。
+        if standbyMode == .microphoneWarm, AVAudioApplication.shared.recordPermission == .granted {
+            updateStandby(force: true)
+        } else {
+            KeyboardChannel.publishStandby(active: false, mode: standbyMode == .off ? "未开启" : "待启动")
+        }
     }
 
     // MARK: - App 内使用
@@ -152,7 +179,8 @@ final class DictationEngine: ObservableObject {
         realtime = nil
         realtimeActive = false
         recorder.onPCM = nil
-        recorder.cancel(deactivateSession: !standbyOwnsSession)
+        let keepWarm = standbyMode == .microphoneWarm
+        _ = recorder.stopCapture(keepWarm: keepWarm, deactivateSession: !standbyOwnsSession)
         stopTimers()
         stage = .idle
         seconds = 0
@@ -225,7 +253,8 @@ final class DictationEngine: ObservableObject {
                 switch type {
                 case .began:
                     if case .recording = self.stage {
-                        self.recorder.cancel(deactivateSession: !self.standbyOwnsSession)
+                        _ = self.recorder.stopCapture(keepWarm: self.standbyMode == .microphoneWarm,
+                                                      deactivateSession: !self.standbyOwnsSession)
                         self.stopTimers()
                         self.stage = .failed("系统中断了录音（来电或其它 App 占用麦克风），请重试。")
                         self.publishPhase(.error, message: "录音被系统中断")
@@ -250,12 +279,15 @@ final class DictationEngine: ObservableObject {
             fail(message: "没有麦克风权限，请到系统设置里允许 VoiceKey 使用麦克风。")
             return
         }
-        // 正在待命时，采集与待命共用音频会话；采集前先收紧播放路径。
+        // 静音/画中画待命与采集抢会话：采集前先让它们让路。
+        // micWarm 相反——会话本来就要一直握着，采集只是翻个标志位。
         if standbyMode == .silentAudio { silentStandby.stop() }
         do {
-            try recorder.start()
+            try recorder.startCapture()
         } catch {
-            fail(message: error.localizedDescription)
+            let message = Self.audioFailureMessage(error, appActive: appIsActive, standby: standbyMode)
+            diagnostics += "\n\n[录音启动失败] \(error.localizedDescription)"
+            fail(message: message)
             return
         }
         stage = .recording
@@ -438,8 +470,8 @@ final class DictationEngine: ObservableObject {
         }
 
         let standbyActive = standbyOwnsSession
-        guard let pcm = recorder.stop(deactivateSession: !standbyActive) else {
-            recorder.cancel(deactivateSession: !standbyActive)
+        let keepWarm = standbyMode == .microphoneWarm
+        guard let pcm = recorder.stopCapture(keepWarm: keepWarm, deactivateSession: !standbyActive) else {
             stopTimers()
             resumeStandbyPlaybackIfNeeded()
             fail(message: "没有录到有效音频，请多说几个字。")
@@ -523,6 +555,24 @@ final class DictationEngine: ObservableObject {
         diagnostics = exchanges.joined(separator: "\n\n")
         finish(text: final, raw: raw, seconds: duration, source: source)
         resumeStandbyPlaybackIfNeeded()
+    }
+
+    /// 把 CoreAudio/AVFAudio 的裸错误码翻译成可执行提示。
+    /// 2003329396 = FourCC `'what'`：最常见于"后台尝试激活录音会话"。
+    nonisolated static func audioFailureMessage(_ error: Error, appActive: Bool, standby: StandbyMode) -> String {
+        let nsError = error as NSError
+        let isCoreAudio = nsError.domain.contains("coreaudio") || nsError.domain.contains("AVFAudio")
+        let raw = "\(nsError.domain) \(nsError.code)"
+        if isCoreAudio || nsError.code == 2_003_329_396 {
+            if appActive {
+                return "无法开启麦克风（\(raw)）：可能被其它 App 占用，或系统刚中断过音频会话。请重试一次。"
+            }
+            if standby == .microphoneWarm {
+                return "麦克风常开已失效（\(raw)）。请打开 VoiceKey 重新开启待命后再回来。"
+            }
+            return "后台无法开启麦克风（\(raw)）。iOS 只允许在「麦克风常开」待命下后台开录——请到设置里改成该模式，或先打开 App 一次。"
+        }
+        return error.localizedDescription
     }
 
     /// 给一个 async 操作加硬超时；超时抛错，由调用方决定回退策略。
@@ -645,15 +695,27 @@ final class DictationEngine: ObservableObject {
 
     // MARK: - 待命
 
-    /// 待命是否正持有音频会话（决定录音结束时能不能 deactivate）。两条路线都算。
+    /// 待命是否正持有音频会话（决定录音结束时能不能 deactivate）。
+    /// micWarm 也持有：它必须保持 `.playAndRecord` 会话激活，后台才能直接开录。
     private var standbyOwnsSession: Bool {
-        standbyMode == .pictureInPicture && (samplePiP.isActive || pipStandby.isActive)
+        switch standbyMode {
+        case .microphoneWarm: return recorder.isWarm
+        case .pictureInPicture: return samplePiP.isActive || pipStandby.isActive
+        case .silentAudio: return silentStandby.isRunning
+        case .off: return false
+        }
     }
 
     private func resumeStandbyPlaybackIfNeeded() {
-        guard standbyOwnsSession else { return }
+        guard standbyMode == .pictureInPicture else { return }
         if samplePiP.isActive { samplePiP.resumeIdlePlayback() }
         if pipStandby.isActive { pipStandby.resumeIdlePlayback() }
+    }
+
+    /// micWarm 的待命状态：warm 且真的收到过音频才算"就绪"。
+    private var warmStandbyStatus: String {
+        guard recorder.isWarm else { return "麦克风常开未就绪" }
+        return recorder.hasRecentAudio ? "麦克风常开待命中" : "麦克风常开中（尚未收到音频）"
     }
 
     /// 优先 sample-buffer 路线（Typeless 同款，窗口可以不绘制内容）；不可用则回落到视频路线。
@@ -698,27 +760,34 @@ final class DictationEngine: ObservableObject {
     }
 
     private func updateStandby(force: Bool) {
-        guard force || !appIsActive else {
-            // 回到前台：停止一切待命，避免占着音频会话。
-            stopPiPStandby()
-            silentStandby.stop()
-            KeyboardChannel.publishStandby(active: false, mode: "未开启")
-            standbyStatus = "未开启"
-            publishPhase(.standby, message: "主 App 已就绪")
-            return
-        }
-
+        // 注意：待命**不随前台切换而拆除**。micWarm 必须一直保持会话激活，
+        // 否则回到前台再切后台就又要重新激活——那正是 iOS 禁止的路径。
         switch standbyMode {
         case .off:
             stopPiPStandby()
             silentStandby.stop()
+            recorder.disarm()
             standbyStatus = "未开启"
             KeyboardChannel.publishStandby(active: false, mode: "未开启")
+        case .microphoneWarm:
+            stopPiPStandby()
+            silentStandby.stop()
+            do {
+                try recorder.arm()
+                standbyStatus = warmStandbyStatus
+                KeyboardChannel.publishStandby(active: true, mode: "麦克风常开")
+                publishPhase(.standby, message: "麦克风常开待命中")
+            } catch {
+                let message = Self.audioFailureMessage(error, appActive: appIsActive, standby: standbyMode)
+                standbyStatus = "麦克风常开启动失败：\(message)"
+                diagnostics += "\n\n[待命] microphoneWarm arm 失败：\(error.localizedDescription)"
+                KeyboardChannel.publishStandby(active: false, mode: "失败")
+            }
         case .silentAudio:
             stopPiPStandby()
             do {
                 try silentStandby.start()
-                standbyStatus = "静音输出待命中（系统仍可能挂起）"
+                standbyStatus = "静音输出待命中（只保进程，不保后台开麦）"
                 KeyboardChannel.publishStandby(active: true, mode: "静音输出")
             } catch {
                 standbyStatus = "静音待命启动失败：\(error.localizedDescription)"

@@ -197,6 +197,30 @@ App 内「设置 → 语音识别 → 识别通道」可切换，两条路都保
 ⑥ 任何一步失败都会如实上报（诊断页 / 键盘状态药丸），不会静默变成"假待命"
 ```
 
+### 为什么"跨 App 点麦克风"之前一定失败（v0.1.10 修复）
+
+报错 `The operation couldn't be completed. (com.apple.coreaudio.avfaudio error 2003329396.)` 里的
+`2003329396` = FourCC `'what'`，含义是**后台不允许激活录音会话**。iOS 的硬限制是：
+App 在后台**不能**把音频会话切到 `.playAndRecord` 并 `setActive(true)`。
+
+我最初只做了「静音输出 / 画中画」两种待命——它们能保住**进程**，但保不住"**能开输入**"。
+已验证实现（Voxt-ios）对此的答案是 `microphoneWarm` 模式，且它是**默认值**：
+
+```swift
+func arm() throws {                         // 必须在 App 还处于前台时调用
+    try session.setCategory(.playAndRecord, mode: .default, options: [...])
+    try session.setActive(true)
+    engine = AVAudioEngine()                // 类别/路由变化后重建输入图
+    input.installTap(onBus: 0, ...)         // 装好 tap → engine.isRunning == true 即 "warm"
+    try engine.start()
+}
+func start(sessionID:chunkSeconds:) throws { try arm()  /* 只是翻采集标志，不再动会话 */ }
+```
+
+本项目的对应实现：`AudioRecorder.arm()` 在前台把 `.playAndRecord` 会话与 input tap 准备好，
+`startCapture()` 只翻 `isCapturing`；待命方式默认改成 **「麦克风常开」**，并把旧配置一次性迁移过来。
+静音/画中画模式保留，但 UI 里如实写明"只保进程、不保后台开麦"。
+
 **关于"用户应该感知不到"**（这是关键体验指标）：
 
 | | 原版 Typeless | 本项目（0.1.7 起） |
