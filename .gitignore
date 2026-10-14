@@ -5,3 +5,5 @@ DerivedData/
 *.xcodeproj/
 xcuserdata/
 *.ipa
+# 逆向分析参考材料（Typeless 2.7.0）：只在本地查阅，不进入版本库
+references/
