@@ -110,8 +110,8 @@ enum SharedStore {
 
     static func post(signal: Signal) { post(signal.notificationName) }
 
-    static func observe(_ name: CFString, handler: @escaping () -> Void) -> AnyObject {
-        let box = ObserverBox(handler: handler)
+    static func observe(_ name: CFString, handler: @escaping () -> Void) -> ObserverBox {
+        let box = ObserverBox(name: name, handler: handler)
         CFNotificationCenterAddObserver(
             CFNotificationCenterGetDarwinNotifyCenter(),
             Unmanaged.passUnretained(box).toOpaque(),
@@ -124,10 +124,34 @@ enum SharedStore {
         return box
     }
 
+    /// Darwin 观察者句柄。
+    ///
+    /// 关键：CFNotificationCenter 只保存**裸指针**（我们用 passUnretained），所以持有者一旦释放
+    /// 而注册还在，下一次通告就会解引用已释放内存 → 键盘扩展崩溃 → 系统切到其它键盘。
+    /// 因此这里必须显式 stop()，并在 deinit 兜底（与已验证实现的 `FallbackSignalListener.deinit` 一致）。
     final class ObserverBox {
+        private let name: CFString
         private let handler: () -> Void
-        init(handler: @escaping () -> Void) { self.handler = handler }
+        private var stopped = false
+
+        init(name: CFString, handler: @escaping () -> Void) {
+            self.name = name
+            self.handler = handler
+        }
+
         func fire() { handler() }
+
+        func stop() {
+            guard !stopped else { return }
+            stopped = true
+            CFNotificationCenterRemoveObserver(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                Unmanaged.passUnretained(self).toOpaque(),
+                CFNotificationName(name), nil
+            )
+        }
+
+        deinit { stop() }
     }
 
     // MARK: - 共享状态（键盘用来显示状态）

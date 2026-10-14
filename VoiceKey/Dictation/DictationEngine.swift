@@ -88,7 +88,7 @@ final class DictationEngine: ObservableObject {
     private var ticker: Timer?
     private var partialTimer: Timer?
     private var heartbeat: Timer?
-    private var requestObserver: AnyObject?
+    private var requestObserver: SharedStore.ObserverBox?
     private var interruptionObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
 

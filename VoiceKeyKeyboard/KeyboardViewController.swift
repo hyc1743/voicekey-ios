@@ -83,7 +83,9 @@ final class KeyboardViewController: UIInputViewController {
 
     // MARK: - 状态
 
-    private var observer: AnyObject?
+    private var observer: SharedStore.ObserverBox?
+    private var isVisible = false
+    private var probeInProgress = false
     private var pollTimer: Timer?
     private var pollStartedAt: Date?
     private var lastInsertedSession = ""
@@ -101,24 +103,49 @@ final class KeyboardViewController: UIInputViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         buildUI()
+        refresh()
+    }
+
+    private func startObserving() {
+        guard observer == nil else { return }
         observer = SharedStore.observe(SharedStore.eventNotification) { [weak self] in
             DispatchQueue.main.async { self?.refresh() }
         }
-        refresh()
+    }
+
+    private func stopObserving() {
+        observer?.stop()
+        observer = nil
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        isVisible = true
         didOpenContainingApp = false
+        startObserving()
+        // 让主 App 知道键盘正在展示（诊断用；也用于判断"键盘在场"）
+        SharedStore.defaults?.set(Date().timeIntervalSince1970, forKey: "extensionSeenAt")
+        SharedStore.defaults?.set(hasFullAccess, forKey: "extensionFullAccess")
+        SharedStore.defaults?.synchronize()
+        // 若上次离开时正在录音/成文，沿用同一次会话而不是新起一次
+        let (phase, _) = SharedStore.readPhase()
+        if phase == .recording || phase == .processing {
+            isRecording = phase == .recording
+            applyMicAppearance(recording: isRecording)
+            if !activeSession.isEmpty { startPolling() }
+        }
         refresh()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        // 键盘消失时若还在录音，主动停止，避免麦克风一直开着。
-        if isRecording, !activeSession.isEmpty { send(source: "stop") }
+        isVisible = false
+        // 与已验证实现一致：键盘消失**不发 stop**。
+        // 录音由主 App 自己管（静音自动结束 / 上限 / 用户在 App 内停止）；
+        // 这里发 stop 会在键盘被系统瞬时时重建时把用户的录音打断，状态也会错乱。
         stopPolling()
         stopPing()
+        stopObserving()
     }
 
     override func textDidChange(_ textInput: UITextInput?) {
@@ -317,6 +344,8 @@ final class KeyboardViewController: UIInputViewController {
     /// 异步 ping：**绝不阻塞键盘主线程**。
     /// 旧实现用 Thread.sleep 在主线程轮询 0.5 秒，键盘会被系统判为无响应并切回其它键盘。
     private func startPing() {
+        guard !probeInProgress else { return }
+        probeInProgress = true
         let request = DictationRequest(source: "ping")
         pendingPingID = request.id
         pingStartedAt = Date()
@@ -335,15 +364,23 @@ final class KeyboardViewController: UIInputViewController {
             stopPing()
             return
         }
+        // 键盘已经不可见时不再动作（避免在重建/切换过程中做半截操作）。
+        guard isVisible else {
+            stopPing()
+            return
+        }
         if SharedStore.read(DictationReply.self, name: "reply-\(id).json") != nil {
             KeyboardChannel.recordPing(ok: true, milliseconds: Int(Date().timeIntervalSince(started) * 1000))
             stopPing()
+            // 读完即删，避免回执文件累积（同已验证实现的 removeReply）。
+            SharedStore.remove(name: "reply-\(id).json")
             startViaSharedChannel()
             return
         }
         guard Date() >= deadline else { return }
         KeyboardChannel.recordPing(ok: false, milliseconds: Int(Date().timeIntervalSince(started) * 1000))
         stopPing()
+        SharedStore.remove(name: "reply-\(id).json")
         // 次级判据：心跳仍新鲜且待命支持后台开录时再赌一次，避免不必要的跳转
         // （跳转会让系统重置输入法，回来后要手动切回 VoiceKey）。
         if SharedStore.mainAppIsAlive, KeyboardChannel.standbySupportsBackgroundCapture {
@@ -359,6 +396,7 @@ final class KeyboardViewController: UIInputViewController {
         pendingPingID = nil
         pingStartedAt = nil
         pingDeadline = nil
+        probeInProgress = false
     }
 
     private func stopRecording() {
