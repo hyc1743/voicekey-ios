@@ -85,11 +85,8 @@ final class StandbySampleBufferPiP: NSObject, AVPictureInPictureControllerDelega
         layer.enqueue(buffer)
 
         let source = AVPictureInPictureController.ContentSource(sampleBufferDisplayLayer: layer, playbackDelegate: self)
-        guard AVPictureInPictureController.isPictureInPictureSupported(),
-              let controller = AVPictureInPictureController(contentSource: source) else {
-            anchor.removeFromSuperview()
-            throw StandbySampleBufferError.unsupported
-        }
+        // 注意：init(contentSource:) 是非可失败构造器（与 init(playerLayer:) 不同）。
+        let controller = AVPictureInPictureController(contentSource: source)
 
         self.anchorView = anchor
         self.displayLayer = layer
