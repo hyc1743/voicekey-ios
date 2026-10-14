@@ -7,10 +7,21 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("接口类型", selection: $engine.asr.kind) {
-                        ForEach(ASRKind.allCases) { kind in Text(kind.title).tag(kind) }
+                    Picker("识别通道", selection: $engine.asr.transport) {
+                        ForEach(ASRTransport.allCases) { transport in Text(transport.title).tag(transport) }
                     }
-                    Text(engine.asr.kind.hint).font(.caption).foregroundStyle(.secondary)
+                    Text(engine.asr.transport.detail).font(.caption).foregroundStyle(.secondary)
+                    SecureField("API Key（存 Keychain）", text: $engine.asr.apiKey)
+                    TextField("语言（可留空自动）", text: $engine.asr.language)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+
+                    if engine.asr.transport == .realtime {
+                        TextField("实时地址", text: $engine.asr.realtimeEndpoint)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                        TextField("实时模型", text: $engine.asr.realtimeModel)
+                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        LabeledContent("协议", value: "百炼 /api-ws/v1/realtime")
+                    } else {
                     LabeledContent("实际路由", value: {
                         switch engine.asr.resolvedKind {
                         case .dashscopeNative: return "百炼原生短音频"
@@ -19,12 +30,13 @@ struct SettingsView: View {
                         case .auto: return "自动"
                         }
                     }())
+                    Picker("接口类型", selection: $engine.asr.kind) {
+                        ForEach(ASRKind.allCases) { kind in Text(kind.title).tag(kind) }
+                    }
+                    Text(engine.asr.kind.hint).font(.caption).foregroundStyle(.secondary)
                     TextField("接口地址", text: $engine.asr.endpoint)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    SecureField("API Key（存 Keychain）", text: $engine.asr.apiKey)
                     TextField("模型", text: $engine.asr.model)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("语言（可留空自动）", text: $engine.asr.language)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                     TextField("识别提示词（可选）", text: $engine.asr.customPrompt, axis: .vertical).lineLimit(2...4)
 
@@ -43,10 +55,11 @@ struct SettingsView: View {
                         Text("每 6 秒").tag(6.0)
                         Text("每 10 秒").tag(10.0)
                     }
+                    }
                 } header: {
                     Text("语音识别 ASR")
                 } footer: {
-                    Text("默认：qwen-audio-3.1-asr-flash，走百炼原生短音频接口：content={type:input_audio,input_audio:{data}} + parameters={format,sample_rate:16000}，并带 X-DashScope-SSE: disable。这套字段与真机验证过的实现逐字段一致。\n该模型不支持热词参数，个人术语会作为提示词交给整理模型。\n单段 base64 上限 10 MB；长录音自动分段。AAC/m4a 体积约 1/20，若接口报格式错，把 format 覆盖改成 m4a 或切回 WAV。")
+                    Text("批量：qwen-audio-3.1-asr-flash 原生短音频接口（content={type:input_audio,input_audio:{data}} + parameters={format,sample_rate:16000}，带 X-DashScope-SSE: disable），字段与真机验证过的实现逐字段一致；该模型不支持热词，术语交给整理模型。单段 base64 上限 10 MB。\n实时：qwen3-asr-flash-realtime 走 wss://…/api-ws/v1/realtime，协议按官方 CLI 实现（session.update / input_audio_buffer.append / …transcription.text 与 .completed / commit+finish）；实时失败会自动回落批量，音频不会丢。")
                 }
 
                 Section {

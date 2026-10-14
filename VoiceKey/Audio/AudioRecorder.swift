@@ -20,6 +20,9 @@ final class AudioRecorder {
     /// 音频线程回调，调用方需自行切回主线程。
     var onLevel: ((Float) -> Void)?
 
+    /// 每块转换后的 16 kHz PCM16（音频线程回调）。实时通道直接拿它上行，不再等攒成文件。
+    var onPCM: ((Data) -> Void)?
+
     var duration: Double {
         lock.lock(); defer { lock.unlock() }
         return Double(pcm.count / 2) / Self.targetSampleRate
@@ -142,6 +145,7 @@ final class AudioRecorder {
         // 与引擎的 300 秒硬上限保持一致，避免"UI 说 5 分钟、实际 3 分钟后就丢音频"。
         if pcm.count < Int(Self.targetSampleRate) * 2 * 300 { pcm.append(bytes) }
         lock.unlock()
+        onPCM?(bytes)
 
         var sum: Double = 0
         for index in 0..<count { let value = Double(channel[0][index]) / 32768.0; sum += value * value }

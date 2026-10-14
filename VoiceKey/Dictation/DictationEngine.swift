@@ -79,6 +79,9 @@ final class DictationEngine: ObservableObject {
     private var appIsActive = true
     private var captureToken = UUID()
     private var persistTask: Task<Void, Never>?
+    private var realtime: RealtimeASRClient?
+    private var realtimeActive = false
+    private var realtimeNote = ""
 
     init() {
         let loaded = SettingsStore.load()
@@ -145,6 +148,10 @@ final class DictationEngine: ObservableObject {
 
     func cancel() {
         cancelRequested = true
+        realtime?.abort()
+        realtime = nil
+        realtimeActive = false
+        recorder.onPCM = nil
         recorder.cancel(deactivateSession: !standbyOwnsSession)
         stopTimers()
         stage = .idle
@@ -260,11 +267,71 @@ final class DictationEngine: ObservableObject {
         liveText = ""
         progress = ""
         quietSince = nil
+        realtimeNote = ""
         captureToken = UUID()
         KeyboardChannel.clearPartial()
         publishPhase(.recording, message: "正在录音")
         startTicker()
-        startPartialTimer()
+        if asr.transport == .realtime {
+            await startRealtimeChannel()
+        } else {
+            startPartialTimer()
+        }
+    }
+
+    /// 实时通道：一条 WebSocket 推 PCM，服务端边说边出字。
+    /// 连接失败不阻塞录音——音频仍在本地累积，收尾时走批量兜底。
+    private func startRealtimeChannel() async {
+        guard asr.realtimeConfigured else {
+            realtimeNote = "实时通道未配置端点或模型，本次走批量通道"
+            diagnostics = realtimeNote
+            startPartialTimer()
+            return
+        }
+        let settings = asr
+        let terms = termsList()
+        let client = RealtimeASRClient(
+            endpoint: settings.realtimeEndpoint,
+            model: settings.realtimeModel,
+            apiKey: settings.apiKey,
+            language: settings.language,
+            corpusText: terms.prefix(50).joined(separator: "、")
+        ) { [weak self] event in
+            Task { @MainActor in self?.handleRealtime(event) }
+        }
+        do {
+            try await client.connect()
+            realtime = client
+            realtimeActive = true
+            realtimeNote = "实时通道已就绪（\(settings.realtimeModel)）"
+            diagnostics = realtimeNote
+            recorder.onPCM = { [weak self] pcm in
+                Task { @MainActor in self?.realtime?.append(pcm: pcm) }
+            }
+        } catch {
+            realtimeActive = false
+            realtime = nil
+            realtimeNote = "实时通道连接失败，已回落到批量通道：\(error.localizedDescription)"
+            diagnostics = realtimeNote
+            startPartialTimer()
+        }
+    }
+
+    private func handleRealtime(_ event: RealtimeASRClient.Event) {
+        switch event {
+        case .ready:
+            publishPhase(.recording, message: "正在录音（实时）")
+        case .interim(let text), .committed(let text):
+            guard case .recording = stage else { return }
+            liveText = text
+            KeyboardChannel.publishPartial(text)
+        case .failed(let message):
+            diagnostics += "\n\n[实时通道] \(message)"
+            if message.contains("拥塞") { return }
+            realtimeNote = message
+        case .finished:
+            break
+        }
     }
 
     private func fail(message: String) {
@@ -345,7 +412,7 @@ final class DictationEngine: ObservableObject {
                 }
                 return
             }
-            self.partialRaw = Self.joinTranscripts([self.partialRaw, result.text])
+            self.partialRaw = TranscriptJoiner.join([self.partialRaw, result.text])
             self.liveText = self.partialRaw
             KeyboardChannel.publishPartial(self.partialRaw)
         }
@@ -381,22 +448,45 @@ final class DictationEngine: ObservableObject {
         let terms = termsList()
         let source = triggerSource
         let tail = pcm.count > sentBytes ? Data(pcm.subdata(in: sentBytes..<pcm.count)) : Data()
-        let segments = AudioTranscoder.chunks(pcm16: tail, seconds: max(5, settings.chunkSeconds))
-
-        var collected: [String] = partialRaw.isEmpty ? [] : [partialRaw]
         var exchanges: [String] = []
-        let outcome = await Self.recognizeAll(segments: segments, settings: settings, terms: terms,
-                                              onProgress: { [weak self] done, total in
-            Task { @MainActor in self?.progress = total > 1 ? "识别中 \(done)/\(total)" : "识别中" }
-        })
-        collected.append(contentsOf: outcome.texts)
-        exchanges.append(contentsOf: outcome.exchanges)
-        progress = ""
-        if !outcome.errors.isEmpty {
-            diagnostics += "\n\n[部分分段识别失败]\n" + outcome.errors.joined(separator: "\n")
+        var collected: [String] = []
+
+        // 实时通道：先收尾拿整段文本；失败或为空则回落到批量分段（音频一直在本地累积，不会丢）。
+        if realtimeActive, let client = realtime {
+            progress = "实时收尾…"
+            recorder.onPCM = nil
+            do {
+                let text = try await client.finish()
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    collected = [text]
+                    exchanges.append("通道=实时 \(settings.realtimeModel)\n" + realtimeNote)
+                } else {
+                    exchanges.append("通道=实时，但结果为空 → 回落批量")
+                }
+            } catch {
+                exchanges.append("通道=实时失败（回落批量）：\(error.localizedDescription)")
+            }
+            realtime = nil
+            realtimeActive = false
+            diagnostics = realtimeNote
         }
 
-        let raw = Self.joinTranscripts(collected)
+        if collected.isEmpty {
+            let segments = AudioTranscoder.chunks(pcm16: tail, seconds: max(5, settings.chunkSeconds))
+            if !partialRaw.isEmpty { collected.append(partialRaw) }
+            let outcome = await Self.recognizeAll(segments: segments, settings: settings, terms: terms,
+                                                  onProgress: { [weak self] done, total in
+                Task { @MainActor in self?.progress = total > 1 ? "识别中 \(done)/\(total)" : "识别中" }
+            })
+            collected.append(contentsOf: outcome.texts)
+            exchanges.append(contentsOf: outcome.exchanges)
+            if !outcome.errors.isEmpty {
+                diagnostics += "\n\n[部分分段识别失败]\n" + outcome.errors.joined(separator: "\n")
+            }
+        }
+        progress = ""
+
+        let raw = TranscriptJoiner.join(collected)
         lastRaw = raw
         guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             resumeStandbyPlaybackIfNeeded()
@@ -523,20 +613,6 @@ final class DictationEngine: ObservableObject {
             .split(whereSeparator: { $0 == "\n" || $0 == "," || $0 == "，" || $0 == "、" })
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-    }
-
-    /// 中英混排拼接：两侧都是 ASCII 字母数字时补空格，否则直接相连（避免中文之间出现空格）。
-    nonisolated static func joinTranscripts(_ parts: [String]) -> String {
-        var result = ""
-        for part in parts {
-            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            if result.isEmpty { result = trimmed; continue }
-            let left = result.unicodeScalars.last.map { CharacterSet.alphanumerics.contains($0) && $0.isASCII } ?? false
-            let right = trimmed.unicodeScalars.first.map { CharacterSet.alphanumerics.contains($0) && $0.isASCII } ?? false
-            result += (left && right) ? " " + trimmed : trimmed
-        }
-        return result
     }
 
     // MARK: - 待命

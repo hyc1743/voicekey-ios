@@ -153,6 +153,35 @@ CI 产出的是**未签名 IPA**，需要自己重签后安装：
 
 ---
 
+## 四之四、双通道 ASR（批量 / 实时可选）
+
+App 内「设置 → 语音识别 → 识别通道」可切换，两条路都保留：
+
+| 通道 | 默认模型 | 机制 | 适合 |
+|---|---|---|---|
+| **批量（默认）** | `qwen-audio-3.1-asr-flash` | 录音→按 10–60 秒分段 HTTP 提交（最多 3 路并发）→ 可选每 4/6/10 秒增量"边录边识别" | 兼容面最广、字段与真机验证过的实现逐字段一致 |
+| **实时（可选）** | `qwen3-asr-flash-realtime` | 一条 WebSocket 持续推 PCM16，服务端**边说边出字**，停止后几乎立即出结果 | 想要 Typeless 同款体感 |
+
+**实时通道的协议依据**（逐字段照抄阿里官方 CLI，不自行发明）：
+`QwenLM/qwen-code` → `packages/cli/src/ui/voice/qwen-asr-realtime-session.ts`（Apache-2.0）
+
+| 环节 | 字段 |
+|---|---|
+| 端点 | `wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=<model>`，鉴权走 WebSocket 请求头 `Authorization: Bearer` |
+| 握手 | 服务端 `session.created` → 客户端发 `session.update`：`{"session":{"input_audio_format":"pcm","sample_rate":16000,"input_audio_transcription":{language?,corpus_text?},"turn_detection":null}}` → 服务端 `session.updated` |
+| 上行 | `{"type":"input_audio_buffer.append","audio":"<base64 PCM16>"}`；**在途字节 > 1 MiB 主动丢帧并只警告一次**（同官方） |
+| 实时预览 | `conversation.item.input_audio_transcription.text` → `{text, stash}` |
+| 成句 | `conversation.item.input_audio_transcription.completed` → `{transcript}` |
+| 失败 | `conversation.item.input_audio_transcription.failed` / `error`（读 `error.message`、`error.code`） |
+| 收尾 | `input_audio_buffer.commit` + `session.finish` → 等 `session.finished`；连接超时 8 秒、收尾超时 60 秒 |
+| 个人术语 | 作为 `input_audio_transcription.corpus_text` 提交（官方支持的通道） |
+
+**兜底设计**：实时连接失败/中途断开/结果为空 → 自动回落到批量通道重新识别**整段本地音频**（录音期间 PCM 一直在本地累积），用户不会丢字；
+连接断开会**立即失败**而不是等满 60 秒超时，所以回落几乎无感。
+
+> 默认仍是批量通道：你之前定的模型是 `qwen-audio-3.1-asr-flash`（已验证 payload），实时通道需要换成 `qwen3-asr-flash-realtime`。
+> 想体验流式，把通道切到「实时」即可；两条路的 Key 共用。
+
 ## 五之一、保活链路（模仿 Typeless）
 
 目标是"用户离开 App 后，键盘点麦克风仍能直接开口，不用切回来"。链路如下，每步都有对应的失败兜底：

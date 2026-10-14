@@ -55,6 +55,26 @@ enum LLMKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// 识别通道：批量 HTTP（按段提交）或实时 WebSocket（流式）。
+enum ASRTransport: String, Codable, CaseIterable, Identifiable {
+    case batch
+    case realtime
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .batch: "批量（HTTP 分段）"
+        case .realtime: "实时（WebSocket 流式）"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .batch: "按 10–60 秒分段提交，可选边录边识别。兼容面最广，任何 OpenAI/百炼批量接口都能用。"
+        case .realtime: "一条 WebSocket 长连接持续推 PCM，服务端边说边出字，停止后几乎立即拿到结果（Typeless 同款机制）。目前适配百炼 qwen3-asr-flash-realtime；失败会自动回落到批量通道。"
+        }
+    }
+}
+
 /// 上传音频格式。WAV 兼容性最好，m4a 体积约为 1/20（长录音推荐）。
 enum UploadFormat: String, Codable, CaseIterable, Identifiable {
     case wav
@@ -90,6 +110,10 @@ enum StandbyMode: String, Codable, CaseIterable, Identifiable {
 }
 
 struct ASRSettings: Codable, Equatable {
+    var transport: ASRTransport = .batch
+    /// 实时通道参数（transport == .realtime 时使用）。
+    var realtimeEndpoint: String = Defaults.realtimeEndpoint
+    var realtimeModel: String = Defaults.realtimeModel
     var kind: ASRKind = .auto
     var endpoint: String = Defaults.dashscopeASREndpoint
     var model: String = Defaults.qwenASRModel
@@ -109,6 +133,12 @@ struct ASRSettings: Codable, Equatable {
     var apiKey: String = ""
 
     static let `default` = ASRSettings()
+
+    /// 实时通道是否可用（需要端点、模型、Key 齐全）。
+    var realtimeConfigured: Bool {
+        !realtimeEndpoint.trimmingCharacters(in: .whitespaces).isEmpty
+            && !realtimeModel.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     /// 实际使用的协议族。
     var resolvedKind: ASRKind {
@@ -143,6 +173,8 @@ struct LLMSettings: Codable, Equatable {
 enum Defaults {
     static let dashscopeASREndpoint = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     static let qwenASRModel = "qwen-audio-3.1-asr-flash"
+    static let realtimeEndpoint = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+    static let realtimeModel = "qwen3-asr-flash-realtime"
     static let deepSeekEndpoint = "https://api.deepseek.com/chat/completions"
     static let deepSeekModel = "deepseek-flash"
 
