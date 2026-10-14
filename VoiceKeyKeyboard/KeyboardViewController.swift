@@ -361,6 +361,13 @@ final class KeyboardViewController: UIInputViewController {
         pingDeadline = nil
     }
 
+    private func stopRecording() {
+        guard isRecording else { return }
+        setState(Copy.writing, color: .systemOrange, status: Copy.writingStatus, hint: "")
+        send(source: "stop")
+        startPolling()
+    }
+
     @objc private func insertTapped() {
         if let result = SharedStore.read(ResultPayload.self, name: "result.json"),
            Date().timeIntervalSince1970 - result.createdAt < 300 {
