@@ -221,6 +221,29 @@ func start(sessionID:chunkSeconds:) throws { try arm()  /* 只是翻采集标志
 `startCapture()` 只翻 `isCapturing`；待命方式默认改成 **「麦克风常开」**，并把旧配置一次性迁移过来。
 静音/画中画模式保留，但 UI 里如实写明"只保进程、不保后台开麦"。
 
+### 键盘"点麦克风后被切走"的真正原因（v0.1.14 修复）
+
+对照已验证实现（Voxt-ios 键盘）逐行比较后发现，**根因是 Darwin 观察者没有注销**：
+
+```swift
+// 它们的实现
+deinit { CFNotificationCenterRemoveObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                            Unmanaged.passUnretained(self).toOpaque(), nil, nil) }
+```
+我这边用 `Unmanaged.passUnretained` 注册，却**从不在 deinit 注销**。CFNotificationCenter 只保存裸指针，
+键盘控制器一旦释放（每次键盘被重建都会），注册就成了悬空指针；而主 App **每次状态变化都会发通告**，
+于是下一次通告就解引用已释放内存 → **键盘扩展崩溃 → 系统自动切到其它键盘**。
+点击麦克风恰好就是这条链：ping → App 回执 → 发通告 → 崩溃 → 切键盘；而 App 已经收到 start，
+所以切回来就看到"已经在录音"。
+
+同批从已验证实现移植的另外 4 点：
+1. **键盘消失不再发 stop**——录音结束由主 App 负责（静音/上限/用户停止），
+   在每次消失都发 stop 会把录音打断、状态也会错乱；
+2. **异步 ping 结果只在键盘可见时生效**（`guard isVisible`）；
+3. **`probeInProgress` 防止并发探测**，回执读完即删；
+4. **重新出现时沿用进行中的会话**（recording/processing 不新起一次），并上报
+   `extensionSeenAt` / `extensionFullAccess` 供诊断。
+
 ### 键盘"点麦克风后被切走"的原因（v0.1.13 修复）
 
 三个交互层缺陷叠加，都会让键盘表现异常：
